@@ -1,5 +1,5 @@
 [package]
-name = "loan_manager"
+name = "lending_pool"
 version = "0.1.0"
 authors = ["Fabian Sanchez <fabiansanchezd@outlook.com>"]
 edition = "2024"
@@ -7,9 +7,6 @@ edition = "2024"
 [dependencies]
 ink = { version = "6.0.0-beta.1", default-features = false, features = ["unstable-hostfn"] }
 config = { path = "../config", default-features = false, features = ["ink-as-dependency"] }
-reputation = { path = "../reputation", default-features = false, features = ["ink-as-dependency"] }
-lending_pool = { path = "../lending_pool", default-features = false, features = ["ink-as-dependency"] }
-vouch = { path = "../vouch", default-features = false, features = ["ink-as-dependency"] }
 
 [dev-dependencies]
 ink_e2e = { version = "6.0.0-beta.1" }
@@ -23,9 +20,6 @@ default = ["std"]
 std = [
     "ink/std",
     "config/std",
-    "reputation/std",
-    "lending_pool/std",
-    "vouch/std",
 ]
 ink-as-dependency = []
 e2e-tests = []
