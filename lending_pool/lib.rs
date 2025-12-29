@@ -267,6 +267,11 @@ mod lending_pool {
             self.user_deposits.get(&user).unwrap_or(0)
         }
 
+        #[ink(message)]
+        pub fn get_total_liquidity(&self) -> Balance {
+            self.total_liquidity.get_or_default()
+        }
+
         /// Disburse part of liquidity (add a borrow basically)
         #[ink(message)]
         pub fn disburse(&mut self, amount: Balance, to: Address) -> Result<(), Error> {

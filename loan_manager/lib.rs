@@ -14,15 +14,6 @@ mod loan_manager {
     use ink::prelude::vec::Vec;
     use ink::prelude::vec;
 
-    /// Enum for loan status
-    #[ink::storage_item(packed)]
-    #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-    pub enum LoanStatus {
-        Pending,
-        Active,
-        Repaid,
-        Defaulted,
-    }
 
     /// Struct for loan information
     #[ink::storage_item(packed)]
