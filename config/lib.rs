@@ -10,7 +10,7 @@ mod config {
         optimal_utilization: u64,
         slope1: u64,
         slope2: u64,
-        boost_multiplier: u64,
+        boost: u64,
         min_stars_to_vouch: u32,
         cooldown_period: Timestamp,
         exposure_cap: u64,
@@ -33,7 +33,7 @@ mod config {
         pub const DEFAULT_OPTIMAL_UTILIZATION: u64 = 80_000_000_000; // 80% scaled by 1e9
         pub const DEFAULT_SLOPE1: u64 = 4_000_000_000; // +4% pre-optimal
         pub const DEFAULT_SLOPE2: u64 = 75_000_000_000; // +75% post-optimal
-        pub const DEFAULT_BOOST_MULTIPLIER: u64 = 2_000_000_000; // +2% boost
+        pub const DEFAULT_BOOST: u64 = 2_000_000_000; // +2 boost
         pub const DEFAULT_MIN_STARS_TO_VOUCH: u32 = 50;
         pub const DEFAULT_COOLDOWN_PERIOD: Timestamp = 2_592_000_000; // 30 days in ms
         pub const DEFAULT_EXPOSURE_CAP: u64 = 5_000_000_000; // 5% scaled by 1e9
@@ -49,7 +49,7 @@ mod config {
                 optimal_utilization: Self::DEFAULT_OPTIMAL_UTILIZATION,
                 slope1: Self::DEFAULT_SLOPE1,
                 slope2: Self::DEFAULT_SLOPE2,
-                boost_multiplier: Self::DEFAULT_BOOST_MULTIPLIER,
+                boost: Self::DEFAULT_BOOST,
                 min_stars_to_vouch: Self::DEFAULT_MIN_STARS_TO_VOUCH,
                 cooldown_period: Self::DEFAULT_COOLDOWN_PERIOD,
                 exposure_cap: Self::DEFAULT_EXPOSURE_CAP,
@@ -98,9 +98,9 @@ mod config {
         }
 
         #[ink(message)]
-        pub fn update_boost_multiplier(&mut self, new_multiplier: u64) -> ConfigResult<()> {
+        pub fn update_boost(&mut self, new_boost: u64) -> ConfigResult<()> {
             self.ensure_admin()?;
-            self.boost_multiplier = new_multiplier;
+            self.boost = new_boost;
             Ok(())
         }
 
@@ -162,8 +162,8 @@ mod config {
         }
 
         #[ink(message)]
-        pub fn get_boost_multiplier(&self) -> u64 {
-            self.boost_multiplier
+        pub fn get_boost(&self) -> u64 {
+            self.boost
         }
 
         #[ink(message)]
@@ -195,7 +195,7 @@ mod config {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use ink::env::{test, DefaultEnvironment};
+        use ink::env::{test};
 
         /// Helper function to set the caller in tests
         pub fn set_caller(caller: Address) {
@@ -220,7 +220,7 @@ mod config {
             assert_eq!(config.get_optimal_utilization(), Config::DEFAULT_OPTIMAL_UTILIZATION);
             assert_eq!(config.get_slope1(), Config::DEFAULT_SLOPE1);
             assert_eq!(config.get_slope2(), Config::DEFAULT_SLOPE2);
-            assert_eq!(config.get_boost_multiplier(), Config::DEFAULT_BOOST_MULTIPLIER);
+            assert_eq!(config.get_boost(), Config::DEFAULT_BOOST);
             assert_eq!(config.get_min_stars_to_vouch(), Config::DEFAULT_MIN_STARS_TO_VOUCH);
             assert_eq!(config.get_cooldown_period(), Config::DEFAULT_COOLDOWN_PERIOD);
             assert_eq!(config.get_exposure_cap(), Config::DEFAULT_EXPOSURE_CAP);
@@ -239,7 +239,7 @@ mod config {
             config.update_optimal_utilization(90_000_000_000).unwrap();
             config.update_slope1(5).unwrap();
             config.update_slope2(80).unwrap();
-            config.update_boost_multiplier(3).unwrap();
+            config.update_boost(3).unwrap();
             config.update_min_stars_to_vouch(75).unwrap();
             config.update_cooldown_period(123_456).unwrap();
             config.update_exposure_cap(6_000_000_000).unwrap();
@@ -250,7 +250,7 @@ mod config {
             assert_eq!(config.get_optimal_utilization(), 90_000_000_000);
             assert_eq!(config.get_slope1(), 5);
             assert_eq!(config.get_slope2(), 80);
-            assert_eq!(config.get_boost_multiplier(), 3);
+            assert_eq!(config.get_boost(), 3);
             assert_eq!(config.get_min_stars_to_vouch(), 75);
             assert_eq!(config.get_cooldown_period(), 123_456);
             assert_eq!(config.get_exposure_cap(), 6_000_000_000);
