@@ -17,6 +17,7 @@ mod reputation {
         loan_history: Vec<LoanStat>,
         vouch_history: Vec<VouchStat>,
         creation_time: Timestamp,
+        banned: bool,
     }
 
     /// Struct for Loan State
@@ -49,6 +50,7 @@ mod reputation {
         UserNotFound,
         InsufficientStars,
         InsufficientStakedStars,
+        UserBanned,
     }
 
     impl Reputation {
@@ -75,11 +77,12 @@ mod reputation {
             let cooldown_period = self.config.get_cooldown_period();
 
             let mut rep = self.user_reps.get(&user).unwrap_or(UserReputation {
-                stars: 0,
+                stars: 1,
                 stars_at_stake: 0,
                 loan_history: Vec::new(),
                 vouch_history: Vec::new(),
                 creation_time: now,
+                banned: false,
             });
 
             // Ignore star accrual while the account is still inside its cooldown window.
@@ -89,6 +92,7 @@ mod reputation {
             }
 
             rep.stars += amount;
+
             self.user_reps.insert(&user, &rep);
         }
 
@@ -97,16 +101,36 @@ mod reputation {
         pub fn can_vouch(&self, user: Address) -> bool {
             let min_stars = self.config.get_min_stars_to_vouch();
             let current_stars = self.user_reps.get(&user)
-                .map(|rep| rep.stars)
+                .map(|rep| if rep.banned { 0 } else { rep.stars })
                 .unwrap_or(0);
 
             current_stars >= min_stars
+        }
+
+        #[ink(message)]
+        pub fn slash_stars(&mut self, user: Address, amount: u32) -> Result<(), Error> {
+            let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
+
+            // Saturating subtract - never go below 0
+            rep.stars = rep.stars.saturating_sub(amount);
+
+            if rep.stars == 0 {
+                rep.banned = true;
+            }
+
+            self.user_reps.insert(&user, &rep);
+
+            Ok(())
         }
 
         /// Function to stake stars for a user
         #[ink(message)]
         pub fn stake_stars(&mut self, user: Address, amount: u32) -> Result<(), Error> {
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
+
+            if rep.banned {
+                return Err(Error::UserBanned);
+            }
 
             if amount > rep.stars {
                 return Err(Error::InsufficientStars);
@@ -124,6 +148,10 @@ mod reputation {
         #[ink(message)]
         pub fn unstake_stars(&mut self, user: Address, amount: u32, success: bool) -> Result<(), Error> {
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
+
+            if rep.banned {
+                return Err(Error::UserBanned);
+            }
 
             if amount > rep.stars_at_stake {
                 return Err(Error::InsufficientStakedStars);
@@ -143,7 +171,6 @@ mod reputation {
                 });
             } else {
                 // Failed vouch -> don't return stars as penalty
-
                 // Update vouch history
                 rep.vouch_history.push(VouchStat {
                     borrower: self.env().caller(),
