@@ -172,6 +172,12 @@ mod vouch {
             count
         }
 
+        /// Get all voucher addresses for a borrower
+        #[ink(message)]
+        pub fn get_all_vouchers(&self, borrower: Address) -> Vec<Address> {
+            self.borrower_vouchers.get(&borrower).unwrap_or_default()
+        }
+
         /// Resolve all vouch relationships for a borrower upon loan completion
         #[ink(message)]
         pub fn resolve_all(&mut self, borrower: Address, success: bool) -> Result<(), Error> {
