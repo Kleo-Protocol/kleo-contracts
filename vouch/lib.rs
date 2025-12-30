@@ -5,6 +5,7 @@
 #[ink::contract]
 mod vouch {
     use ink::storage::Mapping;
+    use ink::prelude::vec::Vec;
     use config::ConfigRef;
     use reputation::ReputationRef;
     use lending_pool::LendingPoolRef;
@@ -36,6 +37,7 @@ mod vouch {
         lending_pool: LendingPoolRef, // Contract address of LendingPool
         relationships: Mapping<(Address, Address), VouchRelationship>,
         borrower_exposure: Mapping<Address, Balance>,
+        borrower_vouchers: Mapping<Address, Vec<Address>>,
     }
 
     /// Events for the vouch contract
@@ -47,6 +49,13 @@ mod vouch {
         capital: Balance,
     }
 
+    #[ink(event)]
+    pub struct VouchResolved {
+        voucher: Address,
+        borrower: Address,
+        success: bool,
+    }
+
     /// Error types for the contract
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]  
@@ -56,6 +65,8 @@ mod vouch {
         UnableToVouch,
         ZeroAmount,
         ExposureCapExceeded,
+        AlreadyResolved,
+        RelationshipNotFound,
     }
 
 
@@ -74,9 +85,11 @@ mod vouch {
                 lending_pool,
                 relationships: Mapping::default(),
                 borrower_exposure: Mapping::default(),
+                borrower_vouchers: Mapping::default(),
             }
         }
 
+        /// Vouch for a borrower by staking stars and capital
         #[ink(message)]
         pub fn vouch_for(&mut self, borrower: Address, stars: u32, capital_percent: u8) -> Result<(), Error> {
             let caller = self.env().caller();
@@ -126,6 +139,13 @@ mod vouch {
             // Track exposure per borrower
             self.borrower_exposure.insert(&borrower, &(current_exposure + staked_capital));
 
+            // Track voucher in the borrower's voucher list
+            let mut vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
+            if !vouchers.contains(&caller) {
+                vouchers.push(caller);
+                self.borrower_vouchers.insert(&borrower, &vouchers);
+            }
+
             // Emit event
             self.env().emit_event(VouchCreated {
                 voucher: caller,
@@ -133,6 +153,62 @@ mod vouch {
                 stars,
                 capital: staked_capital,
             });
+
+            Ok(())
+        }
+
+        /// Get count of active vouches for a borrower
+        #[ink(message)]
+        pub fn get_vouches_for(&self, borrower: Address) -> u32 {
+            let vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
+            let mut count: u32 = 0;
+            for voucher in vouchers {
+                if let Some(rel) = self.relationships.get(&(voucher, borrower)) {
+                    if rel.status == Status::Active {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        /// Resolve all vouch relationships for a borrower upon loan completion
+        #[ink(message)]
+        pub fn resolve_all(&mut self, borrower: Address, success: bool) -> Result<(), Error> {
+            let vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
+
+            for voucher in vouchers.iter() {
+                let key = (*voucher, borrower);
+                if let Some(mut relationship) = self.relationships.get(&key) {
+                    if relationship.status != Status::Active {
+                        continue;
+                    }
+
+                    // Update status
+                    relationship.status = if success { Status::Fulfilled } else { Status::Defaulted };
+                    self.relationships.insert(&key, &relationship);
+
+                    // Unstake/slash stars via Reputation
+                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, success);
+
+                    // If failure, slash capital via LendingPool
+                    if !success {
+                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital);
+                    }
+
+                    self.env().emit_event(VouchResolved {
+                        voucher: *voucher,
+                        borrower,
+                        success,
+                    });
+                }
+            }
+
+            // Reset borrower exposure to 0
+            self.borrower_exposure.remove(&borrower);
+
+            // Clear voucher list for this borrower
+            self.borrower_vouchers.remove(&borrower);
 
             Ok(())
         }
