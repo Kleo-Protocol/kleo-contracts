@@ -42,9 +42,10 @@ mod config {
 
         /// Constructor that initializes configuration with defaults and admin
         #[ink(constructor)]
-        pub fn new(admin: Address) -> Self {
+        pub fn new() -> Self {
+            let caller = Self::env().caller();
             Self {
-                admin,
+                admin: caller,
                 base_interest_rate: Self::DEFAULT_BASE_INTEREST_RATE,
                 optimal_utilization: Self::DEFAULT_OPTIMAL_UTILIZATION,
                 slope1: Self::DEFAULT_SLOPE1,
