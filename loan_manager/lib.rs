@@ -1,5 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+use ink::env::{DefaultEnvironment, Environment};
+
+pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
+
 /// The loans are managed by the LoanManager contract, which interacts with all other contracts
 
 #[ink::contract]
@@ -18,14 +22,14 @@ mod loan_manager {
     #[derive(Debug, PartialEq)]
     pub struct Loan {
         loan_id: u64,
-        borrower: Address,
+        borrower: AccountId,
         amount: Balance,
         interest_rate: u64,
         term: Timestamp,
         purpose: Vec<u8>,
         start_time: Timestamp,
         status: LoanStatus,
-        vouchers: Vec<Address>
+        vouchers: Vec<AccountId>
     }
 
     /// Enun for Loan Status
@@ -41,7 +45,7 @@ mod loan_manager {
     #[ink(event)]
     pub struct LoanRequested{
         id: u64,
-        borrower: Address,
+        borrower: AccountId,
         amount: Balance,
         term: Timestamp,
     }
@@ -49,14 +53,14 @@ mod loan_manager {
     #[ink(event)]
     pub struct LoanRepaid{
         id: u64,
-        borrower: Address,
+        borrower: AccountId,
         amount: Balance,
     }
 
     #[ink(event)]
     pub struct LoanDefaulted {
         id: u64,
-        borrower: Address,
+        borrower: AccountId,
         amount: Balance,
     }
 
@@ -114,19 +118,20 @@ mod loan_manager {
                 return Err(Error::ZeroAmount);
             }
 
-            let caller = self.env().caller();
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
 
             // Calculate tier-based requirements for this loan amount
             let (min_stars, min_vouches) = self.calculate_requirements(amount);
 
             // Verify stars via reputation contract
-            let stars = self.reputation.get_stars(caller);
+            let stars = self.reputation.get_stars(caller_acc);
             if stars < min_stars {
                 return Err(Error::InsufficientReputation);
             }
 
             // Verify vouches via vouch contract
-            let vouches = self.vouch.get_vouches_for(caller);
+            let vouches = self.vouch.get_vouches_for(caller_acc);
             if vouches < min_vouches {
                 return Err(Error::InsufficientVouches);
             }
@@ -139,13 +144,13 @@ mod loan_manager {
             let term = self.config.get_cooldown_period(); // Using cooldown as default term
 
             // Get the vouchers list for this borrower
-            let vouchers_list = self.vouch.get_all_vouchers(caller);
+            let vouchers_list = self.vouch.get_all_vouchers(caller_acc);
 
             // Create loan record
             let loan_id = self.next_loan_id.get_or_default();
             let loan = Loan {
                 loan_id,
-                borrower: caller,
+                borrower: caller_acc,
                 amount,
                 interest_rate: adjusted_rate,
                 term,
@@ -160,13 +165,13 @@ mod loan_manager {
             self.next_loan_id.set(&(loan_id + 1));
 
             // Disburse funds via lending pool
-            self.lending_pool.disburse(amount, caller)
+            self.lending_pool.disburse(amount, caller_acc)
                 .map_err(|_| Error::DisbursementFailed)?;
 
             // Emit LoanRequested event
             self.env().emit_event(LoanRequested {
                 id: loan_id,
-                borrower: caller,
+                borrower: caller_acc,
                 amount,
                 term,
             });

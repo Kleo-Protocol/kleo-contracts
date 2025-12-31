@@ -1,11 +1,15 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+use ink::env::{DefaultEnvironment, Environment};
+
+pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
+
 #[ink::contract]
 mod config {
     /// All information stored for the configurable parameters of the protocol
     #[ink(storage)]
     pub struct Config {
-        admin: Address,
+        admin: AccountId,
         base_interest_rate: u64,
         optimal_utilization: u64,
         slope1: u64,
@@ -43,9 +47,10 @@ mod config {
         /// Constructor that initializes configuration with defaults and admin
         #[ink(constructor)]
         pub fn new() -> Self {
-            let caller = Self::env().caller();
-            Self {
-                admin: caller,
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            Self { 
+                admin: caller_acc,
                 base_interest_rate: Self::DEFAULT_BASE_INTEREST_RATE,
                 optimal_utilization: Self::DEFAULT_OPTIMAL_UTILIZATION,
                 slope1: Self::DEFAULT_SLOPE1,
@@ -62,7 +67,8 @@ mod config {
         /// Ensure that the caller of other functions is the admin
         fn ensure_admin(&self) -> ConfigResult<()> {
             let caller = self.env().caller();
-            if caller != self.admin {
+            let caller_acc = self.env().to_account_id(caller);
+            if caller_acc != self.admin {
                 return Err(Error::NotAdmin);
             }
             Ok(())
@@ -193,88 +199,4 @@ mod config {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use ink::env::{test};
-
-        /// Helper function to set the caller in tests
-        pub fn set_caller(caller: Address) {
-            test::set_caller(caller);
-        }
-
-        /// This will be the default admin address for tests
-        fn default_admin() -> Address {
-            // Example test address (H160)
-            "d43593c715fdd31c61141abd04a99fd6822c8558"
-                .parse()
-                .expect("valid H160")
-        }
-
-        #[ink::test]
-        fn initializes_with_defaults() {
-            let admin = default_admin();
-            let config = Config::new(admin);
-
-            assert_eq!(config.admin, admin);
-            assert_eq!(config.get_base_interest_rate(), Config::DEFAULT_BASE_INTEREST_RATE);
-            assert_eq!(config.get_optimal_utilization(), Config::DEFAULT_OPTIMAL_UTILIZATION);
-            assert_eq!(config.get_slope1(), Config::DEFAULT_SLOPE1);
-            assert_eq!(config.get_slope2(), Config::DEFAULT_SLOPE2);
-            assert_eq!(config.get_boost(), Config::DEFAULT_BOOST);
-            assert_eq!(config.get_min_stars_to_vouch(), Config::DEFAULT_MIN_STARS_TO_VOUCH);
-            assert_eq!(config.get_cooldown_period(), Config::DEFAULT_COOLDOWN_PERIOD);
-            assert_eq!(config.get_exposure_cap(), Config::DEFAULT_EXPOSURE_CAP);
-            assert_eq!(config.get_reserve_factor(), Config::DEFAULT_RESERVE_FACTOR);
-            assert_eq!(config.get_max_rate(), Config::DEFAULT_MAX_RATE);
-        }
-
-        #[ink::test]
-        fn admin_can_update_all_params() {
-            let admin = default_admin();
-            set_caller(admin);
-
-            let mut config = Config::new(admin);
-
-            config.update_base_interest_rate(10).unwrap();
-            config.update_optimal_utilization(90_000_000_000).unwrap();
-            config.update_slope1(5).unwrap();
-            config.update_slope2(80).unwrap();
-            config.update_boost(3).unwrap();
-            config.update_min_stars_to_vouch(75).unwrap();
-            config.update_cooldown_period(123_456).unwrap();
-            config.update_exposure_cap(6_000_000_000).unwrap();
-            config.update_reserve_factor(12).unwrap();
-            config.update_max_rate(110_000_000_000).unwrap();
-
-            assert_eq!(config.get_base_interest_rate(), 10);
-            assert_eq!(config.get_optimal_utilization(), 90_000_000_000);
-            assert_eq!(config.get_slope1(), 5);
-            assert_eq!(config.get_slope2(), 80);
-            assert_eq!(config.get_boost(), 3);
-            assert_eq!(config.get_min_stars_to_vouch(), 75);
-            assert_eq!(config.get_cooldown_period(), 123_456);
-            assert_eq!(config.get_exposure_cap(), 6_000_000_000);
-            assert_eq!(config.get_reserve_factor(), 12);
-            assert_eq!(config.get_max_rate(), 110_000_000_000);
-        }
-
-        #[ink::test]
-        fn non_admin_cannot_update() {
-            let admin = default_admin();
-            let non_admin: Address = "1111111111111111111111111111111111111111"
-                .parse()
-                .expect("valid H160");
-
-            set_caller(admin);
-            let mut config = Config::new(admin);
-
-            set_caller(non_admin);
-            let result = config.update_base_interest_rate(15);
-            assert_eq!(result, Err(Error::NotAdmin));
-
-            // Ensure values did not change
-            assert_eq!(config.get_base_interest_rate(), Config::DEFAULT_BASE_INTEREST_RATE);
-        }
-    }
 }

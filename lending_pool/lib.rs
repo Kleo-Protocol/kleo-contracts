@@ -1,5 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+use ink::env::{DefaultEnvironment, Environment};
+
+pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
+
 /// The lending pool contract is used to manage the pool with auto rate in accruals.
 /// As Kleo uses a loan manager contract to handle loans, this contract will mainly
 /// provide the pool where the contracts are created from, and handle certain calculations.
@@ -10,6 +14,7 @@ mod lending_pool {
     use config::ConfigRef;
     use ink::storage::Lazy;
     use ink::U256;
+    use ink::primitives::AccountIdMapper;
 
     /// All information that is needed to store in the contract
     #[ink(storage)]
@@ -18,20 +23,20 @@ mod lending_pool {
         total_liquidity: Lazy<Balance>,
         total_borrowed: Lazy<Balance>,
         reserved_funds: Lazy<Balance>,
-        user_deposits: Mapping<Address, Balance>,
+        user_deposits: Mapping<AccountId, Balance>,
         last_update: Lazy<Timestamp>,
     }
 
     /// Events for lending pool actions
     #[ink(event)]
     pub struct Deposit {
-        depositor: Address,
+        depositor: AccountId,
         amount: Balance
     }
 
     #[ink(event)]
     pub struct Withdraw {
-        withdrawer: Address,
+        withdrawer: AccountId,
         amount: Balance,
     }
 
@@ -85,12 +90,12 @@ mod lending_pool {
             }
             let deposited: Balance = deposited_u256.as_u128();
 
-            let caller: Address = self.env().caller();
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
 
             // Update the user's deposit balance
-            let current_balance = self.user_deposits.get(&caller).unwrap_or(0);
-            self.user_deposits.insert(&caller, &(current_balance + deposited));
-
+            let current_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
+            self.user_deposits.insert(&caller_acc, &(current_balance + deposited));
             // Update total liquidity
             let mut total_liquidity = self.total_liquidity.get_or_default();
             total_liquidity += deposited;
@@ -98,7 +103,7 @@ mod lending_pool {
 
             // Emit deposit event
             self.env().emit_event(Deposit {
-                depositor: caller,
+                depositor: caller_acc,
                 amount: deposited,
             });
 
@@ -108,19 +113,20 @@ mod lending_pool {
         /// Withdraw funds from the lending pool
         #[ink(message)]
         pub fn withdraw(&mut self, amount: Balance) -> Result<(), Error> {
-            let caller: Address = self.env().caller();
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
             if amount == 0 {
                 return Err(Error::ZeroAmount);
             }
 
             self.accrue_interest();
 
-            let user_balance = self.user_deposits.get(&caller).unwrap_or(0);
+            let user_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
             if amount > user_balance {
                 return Err(Error::UnavailableFunds);
             }
             // Update user's deposit balance
-            self.user_deposits.insert(&caller, &(user_balance - amount));
+            self.user_deposits.insert(&caller_acc, &(user_balance - amount));
 
             // Update total liquidity
             let mut total_liquidity = self.total_liquidity.get_or_default();
@@ -132,7 +138,7 @@ mod lending_pool {
             }
 
             self.env().emit_event(Withdraw {
-                withdrawer: caller,
+                withdrawer: caller_acc,
                 amount,
             });
 
@@ -235,11 +241,14 @@ mod lending_pool {
 
         /// Get user's accrued yield
         #[ink(message)]
-        pub fn get_user_yield(&mut self, user: Address) -> Balance {
+        pub fn get_user_yield(&mut self) -> Balance {
             // First, ensure interest is up-to-date
             self.accrue_interest();
 
-            let user_deposit = self.user_deposits.get(&user).unwrap_or(0);
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+
+            let user_deposit = self.user_deposits.get(&caller_acc).unwrap_or(0);
             if user_deposit == 0 {
                 return 0;
             }
@@ -263,7 +272,7 @@ mod lending_pool {
 
         /// Get user's deposit balance
         #[ink(message)]
-        pub fn get_user_deposit(&self, user: Address) -> Balance {
+        pub fn get_user_deposit(&self, user: AccountId) -> Balance {
             self.user_deposits.get(&user).unwrap_or(0)
         }
 
@@ -274,7 +283,7 @@ mod lending_pool {
 
         /// Disburse part of liquidity (add a borrow basically)
         #[ink(message)]
-        pub fn disburse(&mut self, amount: Balance, to: Address) -> Result<(), Error> {
+        pub fn disburse(&mut self, amount: Balance, to: AccountId) -> Result<(), Error> {
             self.accrue_interest();
 
             let mut total_borrowed = self.total_borrowed.get_or_default();
@@ -291,7 +300,7 @@ mod lending_pool {
             self.total_liquidity.set(&total_liquidity);
 
             // Transfer disbursed amount to the borrower
-            if self.env().transfer(to, U256::from(amount)).is_err() {
+            if self.env().transfer(AccountIdMapper::to_address(to.as_ref()), U256::from(amount)).is_err() {
                 return Err(Error::TransactionFailed);
             }
 
@@ -332,7 +341,7 @@ mod lending_pool {
 
         /// Slash part of the position of a voucher
         #[ink(message)]
-        pub fn slash_stake(&mut self, user: Address, amount: Balance) -> Result<(), Error> {
+        pub fn slash_stake(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
             self.accrue_interest();
             
             let user_balance = self.user_deposits.get(&user).unwrap_or(0);

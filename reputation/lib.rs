@@ -1,5 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+use ink::env::{DefaultEnvironment, Environment};
+
+pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
+
 /// This contract manages reputation or star system across the application
 
 #[ink::contract]
@@ -32,14 +36,14 @@ mod reputation {
     #[ink::storage_item(packed)]
     #[derive(Debug, PartialEq)]
     pub struct VouchStat {
-        borrower: Address,
+        borrower: AccountId,
         successful: bool,
     }
     /// All information that is needed to store in the contract
     #[ink(storage)]
     pub struct Reputation {
         config: ConfigRef, // Contract address of Config
-        user_reps: Mapping<Address, UserReputation>,
+        user_reps: Mapping<AccountId, UserReputation>,
     }
 
 
@@ -66,13 +70,13 @@ mod reputation {
 
         /// Function to get stars of a user
         #[ink(message)]
-        pub fn get_stars(&self, user: Address) -> u32 {
+        pub fn get_stars(&self, user: AccountId) -> u32 {
             self.user_reps.get(&user).map_or(0, |rep| rep.stars)
         }
 
         /// Function to add stars to a user
         #[ink(message)]
-        pub fn add_stars(&mut self, user: Address, amount: u32) {
+        pub fn add_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
             let now = Self::env().block_timestamp();
             let cooldown_period = self.config.get_cooldown_period();
 
@@ -88,17 +92,19 @@ mod reputation {
             // Ignore star accrual while the account is still inside its cooldown window.
             if now.saturating_sub(rep.creation_time) < cooldown_period {
                 self.user_reps.insert(&user, &rep);
-                return;
+                return Ok(());
             }
 
             rep.stars += amount;
 
             self.user_reps.insert(&user, &rep);
+
+            Ok(())
         }
 
         /// Function to check if a user can vouch based on their stars
         #[ink(message)]
-        pub fn can_vouch(&self, user: Address) -> bool {
+        pub fn can_vouch(&self, user: AccountId) -> bool {
             let min_stars = self.config.get_min_stars_to_vouch();
             let current_stars = self.user_reps.get(&user)
                 .map(|rep| if rep.banned { 0 } else { rep.stars })
@@ -108,7 +114,7 @@ mod reputation {
         }
 
         #[ink(message)]
-        pub fn slash_stars(&mut self, user: Address, amount: u32) -> Result<(), Error> {
+        pub fn slash_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
 
             // Saturating subtract - never go below 0
@@ -125,7 +131,7 @@ mod reputation {
 
         /// Function to stake stars for a user
         #[ink(message)]
-        pub fn stake_stars(&mut self, user: Address, amount: u32) -> Result<(), Error> {
+        pub fn stake_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
 
             if rep.banned {
@@ -146,8 +152,10 @@ mod reputation {
 
         /// Function to unstake stars for a user after vouching and loan is repaid successfully
         #[ink(message)]
-        pub fn unstake_stars(&mut self, user: Address, amount: u32, success: bool) -> Result<(), Error> {
+        pub fn unstake_stars(&mut self, user: AccountId, amount: u32, success: bool) -> Result<(), Error> {
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
 
             if rep.banned {
                 return Err(Error::UserBanned);
@@ -166,14 +174,14 @@ mod reputation {
 
                 // Update vouch history
                 rep.vouch_history.push(VouchStat {
-                    borrower: self.env().caller(),
+                    borrower: caller_acc,
                     successful: true,
                 });
             } else {
                 // Failed vouch -> don't return stars as penalty
                 // Update vouch history
                 rep.vouch_history.push(VouchStat {
-                    borrower: self.env().caller(),
+                    borrower: caller_acc,
                     successful: false,
                 });
             }

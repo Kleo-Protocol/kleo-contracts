@@ -1,5 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+use ink::env::{DefaultEnvironment, Environment};
+
+pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
+
 /// This contract manages vouch relationships between users
 
 #[ink::contract]
@@ -35,24 +39,24 @@ mod vouch {
         config: ConfigRef, // Contract address of Config
         reputation: ReputationRef, // Contract address of Reputation
         lending_pool: LendingPoolRef, // Contract address of LendingPool
-        relationships: Mapping<(Address, Address), VouchRelationship>,
-        borrower_exposure: Mapping<Address, Balance>,
-        borrower_vouchers: Mapping<Address, Vec<Address>>,
+        relationships: Mapping<(AccountId, AccountId), VouchRelationship>,
+        borrower_exposure: Mapping<AccountId, Balance>,
+        borrower_vouchers: Mapping<AccountId, Vec<AccountId>>,
     }
 
     /// Events for the vouch contract
     #[ink(event)]
     pub struct VouchCreated {
-        voucher: Address,
-        borrower: Address,
+        voucher: AccountId,
+        borrower: AccountId,
         stars: u32,
         capital: Balance,
     }
 
     #[ink(event)]
     pub struct VouchResolved {
-        voucher: Address,
-        borrower: Address,
+        voucher: AccountId,
+        borrower: AccountId,
         success: bool,
     }
 
@@ -91,9 +95,10 @@ mod vouch {
 
         /// Vouch for a borrower by staking stars and capital
         #[ink(message)]
-        pub fn vouch_for(&mut self, borrower: Address, stars: u32, capital_percent: u8) -> Result<(), Error> {
-            let caller = self.env().caller();
-            let caller_stars = self.reputation.get_stars(caller);
+        pub fn vouch_for(&mut self, borrower: AccountId, stars: u32, capital_percent: u8) -> Result<(), Error> {
+            let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            let caller_stars = self.reputation.get_stars(caller_acc);
 
             if self.reputation.can_vouch(borrower) == false {
                 return Err(Error::UnableToVouch);
@@ -102,7 +107,7 @@ mod vouch {
                 return Err(Error::NotEnoughStars);
             }
 
-            let deposit = self.lending_pool.get_user_deposit(caller);
+            let deposit = self.lending_pool.get_user_deposit(caller_acc);
 
             // Calculate staked capital (percent of deposit)
             let staked_capital = (deposit * (capital_percent as Balance)) / 100;
@@ -111,7 +116,7 @@ mod vouch {
             }
 
             // Stake stars in Reputation
-            self.reputation.stake_stars(caller, stars).map_err(|_| Error::UnableToVouch)?;
+            self.reputation.stake_stars(caller_acc, stars).map_err(|_| Error::UnableToVouch)?;
 
             // Check exposure cap
             let exposure_cap = self.config.get_exposure_cap();
@@ -127,7 +132,7 @@ mod vouch {
             }
 
             // Store the relationship
-            let key = (caller, borrower);
+            let key = (caller_acc, borrower);
             let relationship = VouchRelationship {
                 staked_stars: stars,
                 staked_capital,
@@ -141,14 +146,14 @@ mod vouch {
 
             // Track voucher in the borrower's voucher list
             let mut vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
-            if !vouchers.contains(&caller) {
-                vouchers.push(caller);
+            if !vouchers.contains(&caller_acc) {
+                vouchers.push(caller_acc);
                 self.borrower_vouchers.insert(&borrower, &vouchers);
             }
 
             // Emit event
             self.env().emit_event(VouchCreated {
-                voucher: caller,
+                voucher: caller_acc,
                 borrower,
                 stars,
                 capital: staked_capital,
@@ -159,7 +164,7 @@ mod vouch {
 
         /// Get count of active vouches for a borrower
         #[ink(message)]
-        pub fn get_vouches_for(&self, borrower: Address) -> u32 {
+        pub fn get_vouches_for(&self, borrower: AccountId) -> u32 {
             let vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
             let mut count: u32 = 0;
             for voucher in vouchers {
@@ -174,13 +179,13 @@ mod vouch {
 
         /// Get all voucher addresses for a borrower
         #[ink(message)]
-        pub fn get_all_vouchers(&self, borrower: Address) -> Vec<Address> {
+        pub fn get_all_vouchers(&self, borrower: AccountId) -> Vec<AccountId> {
             self.borrower_vouchers.get(&borrower).unwrap_or_default()
         }
 
         /// Resolve all vouch relationships for a borrower upon loan completion
         #[ink(message)]
-        pub fn resolve_all(&mut self, borrower: Address, success: bool) -> Result<(), Error> {
+        pub fn resolve_all(&mut self, borrower: AccountId, success: bool) -> Result<(), Error> {
             let vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
 
             for voucher in vouchers.iter() {
