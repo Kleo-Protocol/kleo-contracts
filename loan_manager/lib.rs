@@ -15,6 +15,8 @@ mod loan_manager {
     use ink::prelude::vec::Vec;
     use ink::storage::Lazy;
     use ink::storage::Mapping;
+    use ink::U256;
+    use ink::primitives::AccountIdMapper;
 
 
     /// Struct for loan information
@@ -77,6 +79,9 @@ mod loan_manager {
         LoanNotOverdue,
         SlashFailed,
         ResolveFailed,
+        Unauthorized,
+        RepaymentFailed,
+        InvalidRepaymentAmount,
     }
 
     /// All information that is needed to store in the contract
@@ -85,12 +90,17 @@ mod loan_manager {
         config: ConfigRef,
         reputation: ReputationRef,
         lending_pool: LendingPoolRef,
+        lending_pool_address: Lazy<AccountId>,
         vouch: VouchRef,
         loans: Mapping<u64, Loan>,
         next_loan_id: Lazy<u64>,
     }
 
     impl LoanManager {
+        // Token decimals constant - matches the scaling factor used throughout the contract (1e9)
+        // This should match the native currency's decimal places
+        const TOKEN_DECIMALS: Balance = 1_000_000_000; // 1e9
+
         #[ink(constructor)]
         pub fn new(config_address: Address, reputation_address: Address, lending_pool_address: Address, vouch_address: Address) -> Self {
             let config: ConfigRef =
@@ -101,14 +111,18 @@ mod loan_manager {
                 ink::env::call::FromAddr::from_addr(lending_pool_address);
             let vouch: VouchRef =
                 ink::env::call::FromAddr::from_addr(vouch_address);
-            Self {
+            let lending_pool_acc = Self::env().to_account_id(lending_pool_address);
+            let mut instance = Self {
                 config,
                 reputation,
                 lending_pool,
+                lending_pool_address: Lazy::default(),
                 vouch,
                 loans: Mapping::default(),
                 next_loan_id: Lazy::default(),
-            }
+            };
+            instance.lending_pool_address.set(&lending_pool_acc);
+            instance
         }
 
         /// Request a loan from the lending pool
@@ -118,8 +132,7 @@ mod loan_manager {
                 return Err(Error::ZeroAmount);
             }
 
-            let caller= Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
+            let caller_acc = Self::env().to_account_id(Self::env().caller());
 
             // Calculate tier-based requirements for this loan amount
             let (min_stars, min_vouches) = self.calculate_requirements(amount);
@@ -179,6 +192,75 @@ mod loan_manager {
             Ok(loan_id)
         }
 
+        /// Repay a loan
+        /// Calculates the repayment amount (principal + interest) and processes the repayment
+        /// Marks the loan as repaid and resolves vouches as successful
+        #[ink(message, payable)]
+        pub fn repay_loan(&mut self, loan_id: u64) -> Result<(), Error> {
+            let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
+
+            // Only active loans can be repaid
+            if loan.status != LoanStatus::Active {
+                return Err(Error::LoanNotActive);
+            }
+
+            // Verify caller is the borrower
+            let caller_acc = Self::env().to_account_id(Self::env().caller());
+            if caller_acc != loan.borrower {
+                return Err(Error::Unauthorized);
+            }
+
+            // Calculate repayment amount (principal + interest)
+            let repayment_amount = self.calculate_repayment_amount(&loan);
+
+            // Verify the transferred amount matches the required repayment
+            let transferred = self.env().transferred_value();
+            if transferred != U256::from(repayment_amount) {
+                return Err(Error::InvalidRepaymentAmount);
+            }
+
+            // Forward payment to lending pool's receive_repayment
+            // Use build_call to forward the payment with the repayment amount
+            use ink::env::call::{build_call, ExecutionInput, Selector};
+            use ink::env::DefaultEnvironment;
+            
+            let lending_pool_addr = self.lending_pool_address.get().unwrap();
+            let lending_pool_address_h160 = AccountIdMapper::to_address(lending_pool_addr.as_ref());
+            let repayment_u256 = U256::from(repayment_amount);
+            
+            let result = build_call::<DefaultEnvironment>()
+                .call(lending_pool_address_h160)
+                .transferred_value(repayment_u256)
+                .exec_input(
+                    ExecutionInput::new(Selector::new(ink::selector_bytes!("receive_repayment")))
+                        .push_arg(&repayment_amount)
+                )
+                .returns::<Result<(), ()>>()
+                .try_invoke();
+            
+            match result {
+                Ok(Ok(_)) => {},
+                _ => return Err(Error::RepaymentFailed),
+            }
+
+            // Mark loan as repaid
+            loan.status = LoanStatus::Repaid;
+            self.loans.insert(loan_id, &loan);
+
+            // Resolve all vouch relationships as successful
+            self.vouch.resolve_all(loan.borrower, true)
+                .map_err(|_| Error::ResolveFailed)?;
+
+            // Emit LoanRepaid event
+            self.env().emit_event(LoanRepaid {
+                id: loan_id,
+                borrower: loan.borrower,
+                amount: repayment_amount,
+            });
+
+            Ok(())
+        }
+
         /// Check if a loan is overdue and handle defaulting
         /// Slashes borrower's stars and resolves vouches as failed
         #[ink(message)]
@@ -202,8 +284,8 @@ mod loan_manager {
             self.loans.insert(loan_id, &loan);
 
             // Slash borrower's stars via reputation contract
-            // Slash amount proportional to loan amount (e.g., 1 star per 1000 units)
-            let stars_to_slash = (loan.amount / 1_000_000_000_000).max(1) as u32;
+            // Slash amount proportional to loan amount, using consistent token decimals
+            let stars_to_slash = (loan.amount / Self::TOKEN_DECIMALS).max(1) as u32;
             let _ = self.reputation.slash_stars(loan.borrower, stars_to_slash);
 
             // Resolve all vouch relationships as failed
@@ -222,21 +304,30 @@ mod loan_manager {
 
         /// Internal: Calculate tier-based requirements for a loan amount
         /// Returns (min_stars_required, min_vouches_required)
+        /// Tier thresholds and requirements are configurable via the Config contract.
+        /// This avoids hardcoded magic numbers and allows protocol upgrades without
+        /// redeploying the LoanManager.
         fn calculate_requirements(&self, amount: Balance) -> (u32, u32) {
-            // Tier 1: Small loans (< 1000 units) - minimal requirements
-            // Tier 2: Medium loans (1000-10000 units) - moderate requirements
-            // Tier 3: Large loans (> 10000 units) - high requirements
-            let scaled_amount = amount / 1_000_000_000_000; // Scale down for comparison
-
-            if scaled_amount < 1000 {
-                // Tier 1: Small loans
-                (5, 1)  // 5 stars, 1 vouch
-            } else if scaled_amount < 10000 {
-                // Tier 2: Medium loans
-                (20, 2) // 20 stars, 2 vouches
+            // Scaling factor used to normalize the loan amount before tier comparison
+            let scaling_factor = self.config.loan_tier_scaling_factor();
+            let scaled_amount = if scaling_factor > 0 {
+                amount / scaling_factor
             } else {
-                // Tier 3: Large loans
-                (50, 3) // 50 stars, 3 vouches
+                // Fallback to no scaling if misconfigured; preserves previous behavior shape
+                amount
+            };
+            // Configurable tier thresholds expressed in the same scaled units
+            let tier1_max = self.config.loan_tier1_max_scaled_amount();
+            let tier2_max = self.config.loan_tier2_max_scaled_amount();
+            if scaled_amount < tier1_max {
+                // Tier 1 requirements
+                self.config.loan_tier1_requirements()
+            } else if scaled_amount < tier2_max {
+                // Tier 2 requirements
+                self.config.loan_tier2_requirements()
+            } else {
+                // Tier 3 requirements
+                self.config.loan_tier3_requirements()
             }
         }
 
@@ -248,6 +339,31 @@ mod loan_manager {
             let discount_percent = (stars as u64).min(50);
             let discount = base_rate.saturating_mul(discount_percent) / 100;
             base_rate.saturating_sub(discount)
+        }
+
+        /// Internal: Calculate repayment amount (principal + interest)
+        /// Interest is calculated based on the loan's interest_rate, principal amount, and elapsed time
+        fn calculate_repayment_amount(&self, loan: &Loan) -> Balance {
+            let principal = loan.amount;
+            
+            // Calculate elapsed time in milliseconds
+            let current_time = self.env().block_timestamp();
+            let elapsed = current_time.saturating_sub(loan.start_time);
+            
+            // Yearly denominator for scaled rates (assuming rates are in "per year" basis)
+            // 365.25 days * 24 hours * 60 min * 60 sec * 1000 ms ≈ 31_557_600_000 ms
+            const YEAR_MS: u128 = 31_557_600_000u128;
+            
+            // Calculate interest: principal * rate * elapsed_ms / YEAR_MS
+            // The interest_rate is already scaled (e.g., 5% = 50_000_000 for 1e9 base)
+            let interest = (principal as u128)
+                .checked_mul(loan.interest_rate as u128)
+                .and_then(|v| v.checked_mul(elapsed as u128))
+                .and_then(|v| v.checked_div(YEAR_MS))
+                .unwrap_or(0) as Balance;
+            
+            // Total repayment = principal + interest
+            principal.saturating_add(interest)
         }
     }
 }

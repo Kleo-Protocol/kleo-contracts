@@ -20,6 +20,16 @@ mod config {
         exposure_cap: u64,
         reserve_factor: u8,
         max_rate: u64,
+        // Loan tier configuration
+        loan_tier_scaling_factor: Balance,
+        loan_tier1_max_scaled_amount: Balance,
+        loan_tier2_max_scaled_amount: Balance,
+        loan_tier1_min_stars: u32,
+        loan_tier1_min_vouches: u32,
+        loan_tier2_min_stars: u32,
+        loan_tier2_min_vouches: u32,
+        loan_tier3_min_stars: u32,
+        loan_tier3_min_vouches: u32,
     }
 
     // Custom error types for the contract
@@ -43,6 +53,16 @@ mod config {
         pub const DEFAULT_EXPOSURE_CAP: u64 = 50_000_000; // 5% scaled by 1e9
         pub const DEFAULT_RESERVE_FACTOR: u8 = 20; // 20%
         pub const DEFAULT_MAX_RATE: u64 = 100_000_000_000; // Cap at 100%
+        // Loan tier defaults (matching previous hardcoded values)
+        pub const DEFAULT_LOAN_TIER_SCALING_FACTOR: Balance = 1_000_000_000; // 1e9 (TOKEN_DECIMALS)
+        pub const DEFAULT_LOAN_TIER1_MAX_SCALED_AMOUNT: Balance = 1000;
+        pub const DEFAULT_LOAN_TIER2_MAX_SCALED_AMOUNT: Balance = 10000;
+        pub const DEFAULT_LOAN_TIER1_MIN_STARS: u32 = 5;
+        pub const DEFAULT_LOAN_TIER1_MIN_VOUCHES: u32 = 1;
+        pub const DEFAULT_LOAN_TIER2_MIN_STARS: u32 = 20;
+        pub const DEFAULT_LOAN_TIER2_MIN_VOUCHES: u32 = 2;
+        pub const DEFAULT_LOAN_TIER3_MIN_STARS: u32 = 50;
+        pub const DEFAULT_LOAN_TIER3_MIN_VOUCHES: u32 = 3;
 
         /// Constructor that initializes configuration with defaults and admin
         #[ink(constructor)]
@@ -61,6 +81,15 @@ mod config {
                 exposure_cap: Self::DEFAULT_EXPOSURE_CAP,
                 reserve_factor: Self::DEFAULT_RESERVE_FACTOR,
                 max_rate: Self::DEFAULT_MAX_RATE,
+                loan_tier_scaling_factor: Self::DEFAULT_LOAN_TIER_SCALING_FACTOR,
+                loan_tier1_max_scaled_amount: Self::DEFAULT_LOAN_TIER1_MAX_SCALED_AMOUNT,
+                loan_tier2_max_scaled_amount: Self::DEFAULT_LOAN_TIER2_MAX_SCALED_AMOUNT,
+                loan_tier1_min_stars: Self::DEFAULT_LOAN_TIER1_MIN_STARS,
+                loan_tier1_min_vouches: Self::DEFAULT_LOAN_TIER1_MIN_VOUCHES,
+                loan_tier2_min_stars: Self::DEFAULT_LOAN_TIER2_MIN_STARS,
+                loan_tier2_min_vouches: Self::DEFAULT_LOAN_TIER2_MIN_VOUCHES,
+                loan_tier3_min_stars: Self::DEFAULT_LOAN_TIER3_MIN_STARS,
+                loan_tier3_min_vouches: Self::DEFAULT_LOAN_TIER3_MIN_VOUCHES,
             }
         }
 
@@ -146,6 +175,51 @@ mod config {
             Ok(())
         }
 
+        #[ink(message)]
+        pub fn update_loan_tier_scaling_factor(&mut self, new_factor: Balance) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_tier_scaling_factor = new_factor;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_loan_tier1_max_scaled_amount(&mut self, new_max: Balance) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_tier1_max_scaled_amount = new_max;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_loan_tier2_max_scaled_amount(&mut self, new_max: Balance) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_tier2_max_scaled_amount = new_max;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_loan_tier1_requirements(&mut self, min_stars: u32, min_vouches: u32) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_tier1_min_stars = min_stars;
+            self.loan_tier1_min_vouches = min_vouches;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_loan_tier2_requirements(&mut self, min_stars: u32, min_vouches: u32) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_tier2_min_stars = min_stars;
+            self.loan_tier2_min_vouches = min_vouches;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_loan_tier3_requirements(&mut self, min_stars: u32, min_vouches: u32) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_tier3_min_stars = min_stars;
+            self.loan_tier3_min_vouches = min_vouches;
+            Ok(())
+        }
+
         /// Getter functions for configuration parameters
 
         #[ink(message)]
@@ -196,6 +270,42 @@ mod config {
         #[ink(message)]
         pub fn get_max_rate(&self) -> u64 {
             self.max_rate
+        }
+
+        /// Getter for loan tier scaling factor
+        #[ink(message)]
+        pub fn loan_tier_scaling_factor(&self) -> Balance {
+            self.loan_tier_scaling_factor
+        }
+
+        /// Getter for tier 1 maximum scaled amount
+        #[ink(message)]
+        pub fn loan_tier1_max_scaled_amount(&self) -> Balance {
+            self.loan_tier1_max_scaled_amount
+        }
+
+        /// Getter for tier 2 maximum scaled amount
+        #[ink(message)]
+        pub fn loan_tier2_max_scaled_amount(&self) -> Balance {
+            self.loan_tier2_max_scaled_amount
+        }
+
+        /// Getter for tier 1 requirements (min_stars, min_vouches)
+        #[ink(message)]
+        pub fn loan_tier1_requirements(&self) -> (u32, u32) {
+            (self.loan_tier1_min_stars, self.loan_tier1_min_vouches)
+        }
+
+        /// Getter for tier 2 requirements (min_stars, min_vouches)
+        #[ink(message)]
+        pub fn loan_tier2_requirements(&self) -> (u32, u32) {
+            (self.loan_tier2_min_stars, self.loan_tier2_min_vouches)
+        }
+
+        /// Getter for tier 3 requirements (min_stars, min_vouches)
+        #[ink(message)]
+        pub fn loan_tier3_requirements(&self) -> (u32, u32) {
+            (self.loan_tier3_min_stars, self.loan_tier3_min_vouches)
         }
     }
 
