@@ -9,6 +9,7 @@ pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
 #[ink::contract]
 mod vouch {
     use ink::storage::Mapping;
+    use ink::storage::Lazy;
     use ink::prelude::vec::Vec;
     use config::ConfigRef;
     use reputation::ReputationRef;
@@ -39,6 +40,7 @@ mod vouch {
         config: ConfigRef, // Contract address of Config
         reputation: ReputationRef, // Contract address of Reputation
         lending_pool: LendingPoolRef, // Contract address of LendingPool
+        loan_manager: Lazy<Option<AccountId>>, // Contract address of LoanManager (authorized to resolve vouches)
         relationships: Mapping<(AccountId, AccountId), VouchRelationship>,
         borrower_exposure: Mapping<AccountId, Balance>,
         borrower_vouchers: Mapping<AccountId, Vec<AccountId>>,
@@ -71,26 +73,43 @@ mod vouch {
         ExposureCapExceeded,
         AlreadyResolved,
         RelationshipNotFound,
+        Unauthorized,
     }
 
 
     impl Vouch {
         #[ink(constructor)]
-        pub fn new(config_address: Address, reputation_address: Address, lending_pool_address: Address) -> Self {
+        pub fn new(config_address: Address, reputation_address: Address, lending_pool_address: Address, loan_manager_address: Address) -> Self {
             let config =
                 ink::env::call::FromAddr::from_addr(config_address);
             let reputation =
                 ink::env::call::FromAddr::from_addr(reputation_address);
             let lending_pool =
                 ink::env::call::FromAddr::from_addr(lending_pool_address);
-            Self {
+            let loan_manager_acc = Self::env().to_account_id(loan_manager_address);
+            let mut instance = Self {
                 config,
                 reputation,
                 lending_pool,
+                loan_manager: Lazy::default(),
                 relationships: Mapping::default(),
                 borrower_exposure: Mapping::default(),
-                borrower_vouchers: Mapping::default(),
+                borrower_vouchers: Mapping::default()
+            };
+            instance.loan_manager.set(&Some(loan_manager_acc));
+            instance
+        }
+
+        /// Set the loan manager address (can only be set once)
+        /// This should be called after the LoanManager contract is deployed
+        #[ink(message)]
+        pub fn set_loan_manager(&mut self, loan_manager: AccountId) -> Result<(), Error> {
+            // Check if loan manager is already set
+            if self.loan_manager.get().is_some() {
+                return Err(Error::Unauthorized);
             }
+            self.loan_manager.set(&Some(loan_manager));
+            Ok(())
         }
 
         /// Vouch for a borrower by staking stars and capital
@@ -184,8 +203,19 @@ mod vouch {
         }
 
         /// Resolve all vouch relationships for a borrower upon loan completion
+        /// Only callable by the authorized loan manager contract
         #[ink(message)]
         pub fn resolve_all(&mut self, borrower: AccountId, success: bool) -> Result<(), Error> {
+            // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            let loan_manager = self.loan_manager.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller_acc != loan_manager {
+                return Err(Error::Unauthorized);
+            }
+
             let vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
 
             for voucher in vouchers.iter() {

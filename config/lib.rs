@@ -40,7 +40,7 @@ mod config {
         pub const DEFAULT_BOOST: u64 = 2_000_000_000; // +2 boost
         pub const DEFAULT_MIN_STARS_TO_VOUCH: u32 = 50;
         pub const DEFAULT_COOLDOWN_PERIOD: Timestamp = 2_592_000_000; // 30 days in ms
-        pub const DEFAULT_EXPOSURE_CAP: u64 = 5_000_000_000; // 5% scaled by 1e9
+        pub const DEFAULT_EXPOSURE_CAP: u64 = 50_000_000; // 5% scaled by 1e9
         pub const DEFAULT_RESERVE_FACTOR: u8 = 20; // 20%
         pub const DEFAULT_MAX_RATE: u64 = 100_000_000_000; // Cap at 100%
 
