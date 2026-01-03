@@ -127,7 +127,7 @@ mod loan_manager {
 
         /// Request a loan from the lending pool
         #[ink(message)]
-        pub fn request_loan(&mut self, amount: Balance, _purpose: Vec<u8>) -> Result<u64, Error> {
+        pub fn request_loan(&mut self, amount: Balance, purpose: Vec<u8>) -> Result<u64, Error> {
             if amount == 0 {
                 return Err(Error::ZeroAmount);
             }
@@ -167,7 +167,7 @@ mod loan_manager {
                 amount,
                 interest_rate: adjusted_rate,
                 term,
-                purpose: _purpose,
+                purpose,
                 start_time: self.env().block_timestamp(),
                 status: LoanStatus::Active,
                 vouchers: vouchers_list,

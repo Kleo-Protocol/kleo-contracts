@@ -296,13 +296,16 @@ mod lending_pool {
             // Yearly denominator for scaled rates (assuming rates are in "per year" basis)
             // 365.25 days * 24 hours * 60 min * 60 sec * 1000 ms ≈ 31_557_600_000 ms
             const YEAR_MS: u128 = 31_557_600_000u128;
+            
+            // Rate scaling factor (rates are scaled by 1e9, e.g., 10% = 10_000_000_000)
+            const RATE_SCALE: u128 = 1_000_000_000u128;
 
-            // interest = borrowed * rate * elapsed_ms / YEAR_MS
-            // All values scaled appropriately (rate already scaled by 1e9, e.g., 5% = 5_000_000_000, 10% = 10_000_000_000)
+            // interest = borrowed * rate * elapsed_ms / (YEAR_MS * RATE_SCALE)
+            // This properly accounts for the 1e9 scaling in the rate
             let interest = (total_borrowed as u128)
                 .checked_mul(rate as u128)
                 .and_then(|v| v.checked_mul(elapsed as u128))
-                .and_then(|v| v.checked_div(YEAR_MS))
+                .and_then(|v| v.checked_div(YEAR_MS.saturating_mul(RATE_SCALE)))
                 .unwrap_or(0) as Balance;
 
             if interest == 0 {
@@ -349,7 +352,9 @@ mod lending_pool {
             }
 
             // Calculate total accrued interest: current liquidity minus total principal deposits
-            // This represents the interest that has been earned by all depositors
+            // This represents the interest that has been earned by all depositors.
+            // Note: saturating_sub ensures we handle edge cases where liquidity < principal
+            // (which shouldn't occur in normal operation but provides safety)
             let total_principal = self.total_principal_deposits.get_or_default();
             let accrued_interest = total_liquidity.saturating_sub(total_principal);
 
@@ -384,17 +389,17 @@ mod lending_pool {
             self.accrue_interest();
 
             let mut total_borrowed = self.total_borrowed.get_or_default();
-            let mut total_liquidity = self.total_liquidity.get_or_default();
+            let total_liquidity = self.total_liquidity.get_or_default();
 
             if amount > (total_liquidity - total_borrowed) {
                 return Err(Error::UnavailableFunds);
             }
 
-            // Update total liquidity and total borrowed
+            // Update total borrowed (funds are now lent out)
             total_borrowed += amount;
-            total_liquidity -= amount;
             self.total_borrowed.set(&total_borrowed);
-            self.total_liquidity.set(&total_liquidity);
+            // Note: total_liquidity represents the total pool value (available + borrowed)
+            // and does not decrease when funds are disbursed
 
             // Transfer disbursed amount to the borrower
             if self.env().transfer(AccountIdMapper::to_address(to.as_ref()), U256::from(amount)).is_err() {
@@ -422,14 +427,12 @@ mod lending_pool {
 
             self.accrue_interest();
 
-            // Update total borrowed and total liquidity
+            // Update total borrowed (funds are being returned from borrower)
             let mut borrowed = self.total_borrowed.get_or_default();
             borrowed = borrowed.saturating_sub(amount);
             self.total_borrowed.set(&borrowed);
-
-            let mut liquidity = self.total_liquidity.get_or_default();
-            liquidity += amount;
-            self.total_liquidity.set(&liquidity);
+            // Note: total_liquidity represents total pool value and was already updated
+            // via interest accrual, so we don't increase it again here
 
             self.env().emit_event(RepaymentReceived { amount });
 
