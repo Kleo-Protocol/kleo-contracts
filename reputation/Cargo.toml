@@ -1,11 +1,12 @@
 [package]
-name = "config"
+name = "reputation"
 version = "0.1.0"
-authors = ["[your_name] <[your_email]>"]
+authors = ["Fabian Sanchez <fabiansanchezd@outlook.com>"]
 edition = "2024"
 
 [dependencies]
-ink = { version = "6.0.0-beta.1", default-features = false }
+ink = { version = "6.0.0-beta.1", default-features = false, features = ["unstable-hostfn"] }
+config = { path = "../config", default-features = false, features = ["ink-as-dependency"] }
 
 [dev-dependencies]
 ink_e2e = { version = "6.0.0-beta.1" }
@@ -13,10 +14,12 @@ ink_e2e = { version = "6.0.0-beta.1" }
 [lib]
 path = "lib.rs"
 
+
 [features]
 default = ["std"]
 std = [
     "ink/std",
+    "config/std"
 ]
 ink-as-dependency = []
 e2e-tests = []
