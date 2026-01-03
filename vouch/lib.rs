@@ -79,15 +79,14 @@ mod vouch {
 
     impl Vouch {
         #[ink(constructor)]
-        pub fn new(config_address: Address, reputation_address: Address, lending_pool_address: Address, loan_manager_address: Address) -> Self {
+        pub fn new(config_address: Address, reputation_address: Address, lending_pool_address: Address) -> Self {
             let config =
                 ink::env::call::FromAddr::from_addr(config_address);
             let reputation =
                 ink::env::call::FromAddr::from_addr(reputation_address);
             let lending_pool =
                 ink::env::call::FromAddr::from_addr(lending_pool_address);
-            let loan_manager_acc = Self::env().to_account_id(loan_manager_address);
-            let mut instance = Self {
+            Self {
                 config,
                 reputation,
                 lending_pool,
@@ -95,9 +94,7 @@ mod vouch {
                 relationships: Mapping::default(),
                 borrower_exposure: Mapping::default(),
                 borrower_vouchers: Mapping::default()
-            };
-            instance.loan_manager.set(&Some(loan_manager_acc));
-            instance
+            }
         }
 
         /// Set the loan manager address (can only be set once)
