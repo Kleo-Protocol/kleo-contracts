@@ -128,6 +128,7 @@ mod loan_manager {
         /// Request a loan from the lending pool
         #[ink(message)]
         pub fn request_loan(&mut self, amount: Balance, purpose: Vec<u8>) -> Result<u64, Error> {
+            // Note: purpose is stored for reference but not validated - empty purposes are allowed
             if amount == 0 {
                 return Err(Error::ZeroAmount);
             }
