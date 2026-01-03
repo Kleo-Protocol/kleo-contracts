@@ -227,7 +227,7 @@ mod vouch {
                     self.relationships.insert(&key, &relationship);
 
                     // Unstake/slash stars via Reputation
-                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, success);
+                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success);
 
                     // If failure, slash capital via LendingPool
                     if !success {

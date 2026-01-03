@@ -34,7 +34,7 @@ mod loan_manager {
         vouchers: Vec<AccountId>
     }
 
-    /// Enun for Loan Status
+    /// Enum for Loan Status
     #[ink::storage_item(packed)]
     #[derive(Debug, PartialEq)]
     pub enum LoanStatus {
@@ -262,20 +262,34 @@ mod loan_manager {
         }
 
         /// Check if a loan is overdue and handle defaulting
+        /// 
+        /// This function can be called by anyone to trigger default processing for overdue loans.
+        /// It includes safeguards to prevent premature defaults:
+        /// - Only active loans can be defaulted (prevents double-processing)
+        /// - Loan must be past due date + grace period (configurable buffer)
+        /// 
+        /// The grace period provides a buffer after the due date, allowing borrowers time to
+        /// repay and preventing race conditions with repayment transactions.
+        /// 
         /// Slashes borrower's stars and resolves vouches as failed
         #[ink(message)]
         pub fn check_default(&mut self, loan_id: u64) -> Result<(), Error> {
             let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
 
-            // Only active loans can be defaulted
+            // Only active loans can be defaulted (prevents double-processing)
             if loan.status != LoanStatus::Active {
                 return Err(Error::LoanNotActive);
             }
 
-            // Check if loan is overdue
+            // Check if loan is overdue and past grace period
             let current_time = self.env().block_timestamp();
             let due_time = loan.start_time.saturating_add(loan.term);
-            if current_time <= due_time {
+            let grace_period = self.config.get_default_grace_period();
+            let defaultable_time = due_time.saturating_add(grace_period);
+            
+            // Loan can only be defaulted after due_time + grace_period
+            // This prevents premature defaults and provides a buffer for repayments
+            if current_time <= defaultable_time {
                 return Err(Error::LoanNotOverdue);
             }
 
@@ -333,10 +347,19 @@ mod loan_manager {
 
         /// Internal: Adjust interest rate based on borrower's stars
         /// Higher stars result in lower interest rates
+        /// Uses configurable parameters from Config contract
         fn adjust_rate_by_stars(&self, base_rate: u64, stars: u32) -> u64 {
-            // Each star reduces rate by 1%, capped at 50% reduction
-            // Example: 10 stars = 10% reduction, 50+ stars = 50% reduction
-            let discount_percent = (stars as u64).min(50);
+            // Get configurable discount parameters
+            let discount_per_star = self.config.get_star_discount_percent_per_star();
+            let max_discount = self.config.get_max_star_discount_percent();
+            
+            // Calculate discount: stars * discount_per_star, capped at max_discount
+            // Example: 10 stars * 1% per star = 10% reduction, capped at 50%
+            let discount_percent = (stars as u64)
+                .saturating_mul(discount_per_star)
+                .min(max_discount);
+            
+            // Apply discount to base rate
             let discount = base_rate.saturating_mul(discount_percent) / 100;
             base_rate.saturating_sub(discount)
         }
@@ -355,7 +378,7 @@ mod loan_manager {
             const YEAR_MS: u128 = 31_557_600_000u128;
             
             // Calculate interest: principal * rate * elapsed_ms / YEAR_MS
-            // The interest_rate is already scaled (e.g., 5% = 50_000_000 for 1e9 base)
+            // The interest_rate is already scaled by 1e9 (e.g., 5% = 5_000_000_000, 10% = 10_000_000_000)
             let interest = (principal as u128)
                 .checked_mul(loan.interest_rate as u128)
                 .and_then(|v| v.checked_mul(elapsed as u128))

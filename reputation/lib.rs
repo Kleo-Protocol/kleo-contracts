@@ -9,6 +9,7 @@ pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
 #[ink::contract]
 mod reputation {
     use ink::storage::Mapping;
+    use ink::storage::Lazy;
     use config::ConfigRef;
     use ink::prelude::vec::Vec;
 
@@ -44,6 +45,8 @@ mod reputation {
     pub struct Reputation {
         config: ConfigRef, // Contract address of Config
         user_reps: Mapping<AccountId, UserReputation>,
+        vouch_contract: Lazy<Option<AccountId>>, // Authorized vouch contract address
+        loan_manager: Lazy<Option<AccountId>>, // Authorized loan manager contract address
     }
 
 
@@ -55,6 +58,7 @@ mod reputation {
         InsufficientStars,
         InsufficientStakedStars,
         UserBanned,
+        Unauthorized,
     }
 
     impl Reputation {
@@ -65,7 +69,59 @@ mod reputation {
             Self {
                 config,
                 user_reps: Mapping::default(),
+                vouch_contract: Lazy::default(),
+                loan_manager: Lazy::default(),
             }
+        }
+
+        /// Set the vouch contract address (can only be set once)
+        /// This should be called after the Vouch contract is deployed
+        #[ink(message)]
+        pub fn set_vouch_contract(&mut self, vouch_address: AccountId) -> Result<(), Error> {
+            // Check if vouch contract is already set
+            if self.vouch_contract.get().is_some() {
+                return Err(Error::Unauthorized);
+            }
+            self.vouch_contract.set(&Some(vouch_address));
+            Ok(())
+        }
+
+        /// Set the loan manager contract address (can only be set once)
+        /// This should be called after the LoanManager contract is deployed
+        #[ink(message)]
+        pub fn set_loan_manager(&mut self, loan_manager_address: AccountId) -> Result<(), Error> {
+            // Check if loan manager is already set
+            if self.loan_manager.get().is_some() {
+                return Err(Error::Unauthorized);
+            }
+            self.loan_manager.set(&Some(loan_manager_address));
+            Ok(())
+        }
+
+        /// Internal helper to check if caller is the authorized vouch contract
+        fn ensure_vouch_contract(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            let vouch_contract = self.vouch_contract.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller_acc != vouch_contract {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
+        }
+
+        /// Internal helper to check if caller is the authorized loan manager
+        fn ensure_loan_manager(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            let loan_manager = self.loan_manager.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller_acc != loan_manager {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
         }
 
         /// Function to get stars of a user
@@ -75,8 +131,26 @@ mod reputation {
         }
 
         /// Function to add stars to a user
+        /// Only callable by authorized contracts (loan manager or vouch contract)
         #[ink(message)]
         pub fn add_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
+            // Verify caller is an authorized contract (loan manager or vouch contract)
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            let loan_manager = self.loan_manager.get().and_then(|opt| opt);
+            let vouch_contract = self.vouch_contract.get().and_then(|opt| opt);
+            
+            let is_authorized = match (loan_manager, vouch_contract) {
+                (Some(lm), Some(vc)) => caller_acc == lm || caller_acc == vc,
+                (Some(lm), None) => caller_acc == lm,
+                (None, Some(vc)) => caller_acc == vc,
+                (None, None) => false,
+            };
+            
+            if !is_authorized {
+                return Err(Error::Unauthorized);
+            }
+
             let now = Self::env().block_timestamp();
             let cooldown_period = self.config.get_cooldown_period();
 
@@ -113,8 +187,13 @@ mod reputation {
             current_stars >= min_stars
         }
 
+        /// Slash stars from a user (penalty for defaults)
+        /// Only callable by the authorized loan manager contract
         #[ink(message)]
         pub fn slash_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
+            // Verify caller is the authorized loan manager
+            self.ensure_loan_manager()?;
+
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
 
             // Saturating subtract - never go below 0
@@ -130,8 +209,12 @@ mod reputation {
         }
 
         /// Function to stake stars for a user
+        /// Only callable by the authorized vouch contract
         #[ink(message)]
         pub fn stake_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
+            // Verify caller is the authorized vouch contract
+            self.ensure_vouch_contract()?;
+
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
 
             if rep.banned {
@@ -151,11 +234,13 @@ mod reputation {
         }
 
         /// Function to unstake stars for a user after vouching and loan is repaid successfully
+        /// Only callable by the authorized vouch contract
         #[ink(message)]
-        pub fn unstake_stars(&mut self, user: AccountId, amount: u32, success: bool) -> Result<(), Error> {
+        pub fn unstake_stars(&mut self, user: AccountId, amount: u32, borrower: AccountId, success: bool) -> Result<(), Error> {
+            // Verify caller is the authorized vouch contract
+            self.ensure_vouch_contract()?;
+
             let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
-            let caller= Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
 
             if rep.banned {
                 return Err(Error::UserBanned);
@@ -172,16 +257,16 @@ mod reputation {
                 // Successful vouch -> return stake + bonus (e.g., +2 stars)
                 rep.stars += amount + self.config.get_boost() as u32;
 
-                // Update vouch history
+                // Update vouch history with the actual borrower
                 rep.vouch_history.push(VouchStat {
-                    borrower: caller_acc,
+                    borrower,
                     successful: true,
                 });
             } else {
                 // Failed vouch -> don't return stars as penalty
-                // Update vouch history
+                // Update vouch history with the actual borrower
                 rep.vouch_history.push(VouchStat {
-                    borrower: caller_acc,
+                    borrower,
                     successful: false,
                 });
             }

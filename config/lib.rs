@@ -30,6 +30,11 @@ mod config {
         loan_tier2_min_vouches: u32,
         loan_tier3_min_stars: u32,
         loan_tier3_min_vouches: u32,
+        // Default grace period - time after due date before loan can be marked as defaulted
+        default_grace_period: Timestamp,
+        // Star-based discount configuration
+        star_discount_percent_per_star: u64, // Discount percentage per star (e.g., 1 = 1% per star)
+        max_star_discount_percent: u64, // Maximum discount cap (e.g., 50 = 50% max discount)
     }
 
     // Custom error types for the contract
@@ -43,7 +48,7 @@ mod config {
     pub type ConfigResult<T> = core::result::Result<T, Error>;
 
     impl Config {
-        pub const DEFAULT_BASE_INTEREST_RATE: u64 = 10_000_000; // 10%
+        pub const DEFAULT_BASE_INTEREST_RATE: u64 = 10_000_000_000; // 10% scaled by 1e9
         pub const DEFAULT_OPTIMAL_UTILIZATION: u64 = 80_000_000_000; // 80% scaled by 1e9
         pub const DEFAULT_SLOPE1: u64 = 4_000_000_000; // +4% pre-optimal
         pub const DEFAULT_SLOPE2: u64 = 75_000_000_000; // +75% post-optimal
@@ -63,6 +68,11 @@ mod config {
         pub const DEFAULT_LOAN_TIER2_MIN_VOUCHES: u32 = 2;
         pub const DEFAULT_LOAN_TIER3_MIN_STARS: u32 = 50;
         pub const DEFAULT_LOAN_TIER3_MIN_VOUCHES: u32 = 3;
+        // Default grace period: 7 days (allows time for repayment after due date)
+        pub const DEFAULT_GRACE_PERIOD: Timestamp = 604_800_000; // 7 days in ms
+        // Star discount defaults
+        pub const DEFAULT_STAR_DISCOUNT_PERCENT_PER_STAR: u64 = 1; // 1% discount per star
+        pub const DEFAULT_MAX_STAR_DISCOUNT_PERCENT: u64 = 50; // 50% maximum discount cap
 
         /// Constructor that initializes configuration with defaults and admin
         #[ink(constructor)]
@@ -90,6 +100,9 @@ mod config {
                 loan_tier2_min_vouches: Self::DEFAULT_LOAN_TIER2_MIN_VOUCHES,
                 loan_tier3_min_stars: Self::DEFAULT_LOAN_TIER3_MIN_STARS,
                 loan_tier3_min_vouches: Self::DEFAULT_LOAN_TIER3_MIN_VOUCHES,
+                default_grace_period: Self::DEFAULT_GRACE_PERIOD,
+                star_discount_percent_per_star: Self::DEFAULT_STAR_DISCOUNT_PERCENT_PER_STAR,
+                max_star_discount_percent: Self::DEFAULT_MAX_STAR_DISCOUNT_PERCENT,
             }
         }
 
@@ -220,6 +233,27 @@ mod config {
             Ok(())
         }
 
+        #[ink(message)]
+        pub fn update_default_grace_period(&mut self, new_period: Timestamp) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.default_grace_period = new_period;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_star_discount_percent_per_star(&mut self, new_discount: u64) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.star_discount_percent_per_star = new_discount;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_max_star_discount_percent(&mut self, new_max: u64) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.max_star_discount_percent = new_max;
+            Ok(())
+        }
+
         /// Getter functions for configuration parameters
 
         #[ink(message)]
@@ -306,6 +340,24 @@ mod config {
         #[ink(message)]
         pub fn loan_tier3_requirements(&self) -> (u32, u32) {
             (self.loan_tier3_min_stars, self.loan_tier3_min_vouches)
+        }
+
+        /// Getter for default grace period
+        #[ink(message)]
+        pub fn get_default_grace_period(&self) -> Timestamp {
+            self.default_grace_period
+        }
+
+        /// Getter for star discount percent per star
+        #[ink(message)]
+        pub fn get_star_discount_percent_per_star(&self) -> u64 {
+            self.star_discount_percent_per_star
+        }
+
+        /// Getter for maximum star discount percent
+        #[ink(message)]
+        pub fn get_max_star_discount_percent(&self) -> u64 {
+            self.max_star_discount_percent
         }
     }
 
