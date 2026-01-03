@@ -61,6 +61,12 @@ mod lending_pool {
         Unauthorized,
     }
 
+    // Constants for interest rate calculations
+    /// Pre-calculated denominator for interest calculations
+    /// Accounts for yearly conversion (31_557_600_000 ms/year) and rate scaling (1e9)
+    /// Formula: YEAR_MS * RATE_SCALE = 31_557_600_000 * 1_000_000_000
+    const INTEREST_DENOMINATOR: u128 = 31_557_600_000_000_000_000u128;
+
     impl LendingPool {
         #[ink(constructor)]
         pub fn new(config_address: Address) -> Self {
@@ -293,19 +299,12 @@ mod lending_pool {
             // Get current dynamic rate (same logic as get_current_rate)
             let rate = self.get_current_rate(); // Reuses the public logic
 
-            // Yearly denominator for scaled rates (assuming rates are in "per year" basis)
-            // 365.25 days * 24 hours * 60 min * 60 sec * 1000 ms ≈ 31_557_600_000 ms
-            const YEAR_MS: u128 = 31_557_600_000u128;
-            
-            // Rate scaling factor (rates are scaled by 1e9, e.g., 10% = 10_000_000_000)
-            const RATE_SCALE: u128 = 1_000_000_000u128;
-
-            // interest = borrowed * rate * elapsed_ms / (YEAR_MS * RATE_SCALE)
-            // This properly accounts for the 1e9 scaling in the rate
+            // interest = borrowed * rate * elapsed_ms / INTEREST_DENOMINATOR
+            // INTEREST_DENOMINATOR accounts for both yearly conversion and 1e9 rate scaling
             let interest = (total_borrowed as u128)
                 .checked_mul(rate as u128)
                 .and_then(|v| v.checked_mul(elapsed as u128))
-                .and_then(|v| v.checked_div(YEAR_MS.saturating_mul(RATE_SCALE)))
+                .and_then(|v| v.checked_div(INTEREST_DENOMINATOR))
                 .unwrap_or(0) as Balance;
 
             if interest == 0 {

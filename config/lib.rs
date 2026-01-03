@@ -52,7 +52,7 @@ mod config {
         pub const DEFAULT_OPTIMAL_UTILIZATION: u64 = 80_000_000_000; // 80% scaled by 1e9
         pub const DEFAULT_SLOPE1: u64 = 4_000_000_000; // +4% pre-optimal
         pub const DEFAULT_SLOPE2: u64 = 75_000_000_000; // +75% post-optimal
-        pub const DEFAULT_BOOST: u64 = 2; // +2 stars boost for successful vouches
+        pub const DEFAULT_BOOST: u64 = 2; // +2 stars boost for successful vouches (raw count, not scaled)
         pub const DEFAULT_MIN_STARS_TO_VOUCH: u32 = 50;
         pub const DEFAULT_COOLDOWN_PERIOD: Timestamp = 2_592_000_000; // 30 days in ms
         pub const DEFAULT_EXPOSURE_CAP: u64 = 50_000_000; // 5% scaled by 1e9
