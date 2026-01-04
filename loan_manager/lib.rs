@@ -38,7 +38,8 @@ mod loan_manager {
     #[ink::storage_item(packed)]
     #[derive(Debug, PartialEq)]
     pub enum LoanStatus {
-        Active,
+        Pending,  // Waiting for vouches
+        Active,   // Funded and active
         Repaid,
         Defaulted
     }
@@ -76,6 +77,7 @@ mod loan_manager {
         DisbursementFailed,
         LoanNotFound,
         LoanNotActive,
+        LoanNotPending,
         LoanNotOverdue,
         SlashFailed,
         ResolveFailed,
@@ -135,6 +137,7 @@ mod loan_manager {
         }
 
         /// Request a loan from the lending pool
+        /// Creates a pending loan that requires vouches before disbursement
         #[ink(message)]
         pub fn request_loan(&mut self, amount: Balance, _purpose: Vec<u8>) -> Result<u64, Error> {
             if amount == 0 {
@@ -144,18 +147,12 @@ mod loan_manager {
             let caller_acc = Self::env().to_account_id(Self::env().caller());
 
             // Calculate tier-based requirements for this loan amount
-            let (min_stars, min_vouches) = self.calculate_requirements(amount);
+            let (min_stars, _min_vouches) = self.calculate_requirements(amount);
 
-            // Verify stars via reputation contract
+            // Verify stars via reputation contract (still required for loan request)
             let stars = self.reputation.get_stars(caller_acc);
             if stars < min_stars {
                 return Err(Error::InsufficientReputation);
-            }
-
-            // Verify vouches via vouch contract
-            let vouches = self.vouch.get_vouches_for(caller_acc);
-            if vouches < min_vouches {
-                return Err(Error::InsufficientVouches);
             }
 
             // Fetch current rate from lending pool and adjust by stars
@@ -165,10 +162,7 @@ mod loan_manager {
             // Get loan term from config (default 30 days in ms)
             let term = self.config.get_cooldown_period(); // Using cooldown as default term
 
-            // Get the vouchers list for this borrower
-            let vouchers_list = self.vouch.get_all_vouchers(caller_acc);
-
-            // Create loan record
+            // Create pending loan record (no vouches yet, no disbursement)
             let loan_id = self.next_loan_id.get_or_default();
             let loan = Loan {
                 loan_id,
@@ -177,18 +171,14 @@ mod loan_manager {
                 interest_rate: adjusted_rate,
                 term,
                 purpose: _purpose,
-                start_time: self.env().block_timestamp(),
-                status: LoanStatus::Active,
-                vouchers: vouchers_list,
+                start_time: 0, // Will be set when loan becomes Active
+                status: LoanStatus::Pending,
+                vouchers: Vec::new(), // Empty until vouches are added
             };
 
             // Store the loan
             self.loans.insert(loan_id, &loan);
             self.next_loan_id.set(&(loan_id + 1));
-
-            // Disburse funds via lending pool
-            self.lending_pool.disburse(amount, caller_acc)
-                .map_err(|_| Error::DisbursementFailed)?;
 
             // Emit LoanRequested event
             self.env().emit_event(LoanRequested {
@@ -199,6 +189,65 @@ mod loan_manager {
             });
 
             Ok(loan_id)
+        }
+
+        /// Vouch for a pending loan
+        /// Validates loan is pending, then creates vouch and checks if disbursement is ready
+        #[ink(message)]
+        pub fn vouch_for_loan(&mut self, loan_id: u64, stars: u32, capital_percent: u8) -> Result<(), Error> {
+            let loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
+
+            // Only pending loans can receive vouches
+            if loan.status != LoanStatus::Pending {
+                return Err(Error::LoanNotPending);
+            }
+
+            let voucher = Self::env().to_account_id(Self::env().caller());
+
+            // Create vouch via vouch contract
+            self.vouch.vouch_for_loan(loan_id, loan.borrower, voucher, stars, capital_percent)
+                .map_err(|_| Error::ResolveFailed)?;
+
+            // Check if we now have enough vouches to disburse
+            let (_min_stars, min_vouches) = self.calculate_requirements(loan.amount);
+            let current_vouches = self.vouch.get_vouches_for_loan(loan_id);
+
+            if current_vouches >= min_vouches {
+                // Auto-disburse when threshold is met
+                self.disburse_loan(loan_id)?;
+            }
+
+            Ok(())
+        }
+
+        /// Internal function to disburse a loan that has enough vouches
+        fn disburse_loan(&mut self, loan_id: u64) -> Result<(), Error> {
+            let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
+
+            if loan.status != LoanStatus::Pending {
+                return Err(Error::LoanNotPending);
+            }
+
+            // Get the vouchers list for this loan
+            let vouchers_list = self.vouch.get_vouchers_for_loan(loan_id);
+
+            // Update loan to Active status
+            loan.status = LoanStatus::Active;
+            loan.start_time = self.env().block_timestamp();
+            loan.vouchers = vouchers_list;
+            self.loans.insert(loan_id, &loan);
+
+            // Disburse funds via lending pool
+            self.lending_pool.disburse(loan.amount, loan.borrower)
+                .map_err(|_| Error::DisbursementFailed)?;
+
+            Ok(())
+        }
+
+        /// Get loan information (for external queries)
+        #[ink(message)]
+        pub fn get_loan(&self, loan_id: u64) -> Option<Loan> {
+            self.loans.get(loan_id)
         }
 
         /// Repay a loan
@@ -256,8 +305,8 @@ mod loan_manager {
             loan.status = LoanStatus::Repaid;
             self.loans.insert(loan_id, &loan);
 
-            // Resolve all vouch relationships as successful
-            self.vouch.resolve_all(loan.borrower, true)
+            // Resolve all vouch relationships for this loan as successful
+            self.vouch.resolve_loan(loan_id, loan.borrower, true)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanRepaid event
@@ -311,8 +360,8 @@ mod loan_manager {
             let stars_to_slash = (loan.amount / Self::TOKEN_DECIMALS).max(1) as u32;
             let _ = self.reputation.slash_stars(loan.borrower, stars_to_slash);
 
-            // Resolve all vouch relationships as failed
-            self.vouch.resolve_all(loan.borrower, false)
+            // Resolve all vouch relationships for this loan as failed
+            self.vouch.resolve_loan(loan_id, loan.borrower, false)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanDefaulted event

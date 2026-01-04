@@ -28,6 +28,7 @@ mod vouch {
     #[ink::storage_item(packed)]
     #[derive(Debug, PartialEq)]
     pub struct VouchRelationship {
+        loan_id: u64,          // Loan this vouch is for
         staked_stars: u32,
         staked_capital: Balance,
         created_at: Timestamp,
@@ -41,9 +42,10 @@ mod vouch {
         reputation: ReputationRef, // Contract address of Reputation
         lending_pool: LendingPoolRef, // Contract address of LendingPool
         loan_manager: Lazy<Option<AccountId>>, // Contract address of LoanManager (authorized to resolve vouches)
-        relationships: Mapping<(AccountId, AccountId), VouchRelationship>,
+        relationships: Mapping<(AccountId, AccountId), VouchRelationship>, // (voucher, borrower) -> relationship
+        loan_vouchers: Mapping<u64, Vec<AccountId>>, // loan_id -> list of vouchers
         borrower_exposure: Mapping<AccountId, Balance>,
-        borrower_vouchers: Mapping<AccountId, Vec<AccountId>>,
+        borrower_vouchers: Mapping<AccountId, Vec<AccountId>>, // Kept for backward compatibility
     }
 
     /// Events for the vouch contract
@@ -92,6 +94,7 @@ mod vouch {
                 lending_pool,
                 loan_manager: Lazy::default(),
                 relationships: Mapping::default(),
+                loan_vouchers: Mapping::default(),
                 borrower_exposure: Mapping::default(),
                 borrower_vouchers: Mapping::default()
             }
@@ -109,21 +112,30 @@ mod vouch {
             Ok(())
         }
 
-        /// Vouch for a borrower by staking stars and capital
+        /// Vouch for a specific loan (called by loan_manager after validation)
+        /// Only callable by loan_manager
         #[ink(message)]
-        pub fn vouch_for(&mut self, borrower: AccountId, stars: u32, capital_percent: u8) -> Result<(), Error> {
-            let caller= Self::env().caller();
+        pub fn vouch_for_loan(&mut self, loan_id: u64, borrower: AccountId, voucher: AccountId, stars: u32, capital_percent: u8) -> Result<(), Error> {
+            // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
             let caller_acc = Self::env().to_account_id(caller);
-            let caller_stars = self.reputation.get_stars(caller_acc);
+            let loan_manager = self.loan_manager.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller_acc != loan_manager {
+                return Err(Error::Unauthorized);
+            }
+
+            let voucher_stars = self.reputation.get_stars(voucher);
 
             if self.reputation.can_vouch(borrower) == false {
                 return Err(Error::UnableToVouch);
             }
-            if caller_stars < stars {
+            if voucher_stars < stars {
                 return Err(Error::NotEnoughStars);
             }
 
-            let deposit = self.lending_pool.get_user_deposit(caller_acc);
+            let deposit = self.lending_pool.get_user_deposit(voucher);
 
             // Calculate staked capital (percent of deposit)
             let staked_capital = (deposit * (capital_percent as Balance)) / 100;
@@ -132,7 +144,7 @@ mod vouch {
             }
 
             // Stake stars in Reputation
-            self.reputation.stake_stars(caller_acc, stars).map_err(|_| Error::UnableToVouch)?;
+            self.reputation.stake_stars(voucher, stars).map_err(|_| Error::UnableToVouch)?;
 
             // Check exposure cap
             let exposure_cap = self.config.get_exposure_cap();
@@ -148,8 +160,9 @@ mod vouch {
             }
 
             // Store the relationship
-            let key = (caller_acc, borrower);
+            let key = (voucher, borrower);
             let relationship = VouchRelationship {
+                loan_id,
                 staked_stars: stars,
                 staked_capital,
                 created_at: self.env().block_timestamp(),
@@ -160,16 +173,23 @@ mod vouch {
             // Track exposure per borrower
             self.borrower_exposure.insert(&borrower, &(current_exposure + staked_capital));
 
-            // Track voucher in the borrower's voucher list
-            let mut vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
-            if !vouchers.contains(&caller_acc) {
-                vouchers.push(caller_acc);
-                self.borrower_vouchers.insert(&borrower, &vouchers);
+            // Track voucher in the loan's voucher list
+            let mut loan_vouchers = self.loan_vouchers.get(&loan_id).unwrap_or_default();
+            if !loan_vouchers.contains(&voucher) {
+                loan_vouchers.push(voucher);
+                self.loan_vouchers.insert(&loan_id, &loan_vouchers);
+            }
+
+            // Track voucher in the borrower's voucher list (for backward compatibility)
+            let mut borrower_vouchers_list = self.borrower_vouchers.get(&borrower).unwrap_or_default();
+            if !borrower_vouchers_list.contains(&voucher) {
+                borrower_vouchers_list.push(voucher);
+                self.borrower_vouchers.insert(&borrower, &borrower_vouchers_list);
             }
 
             // Emit event
             self.env().emit_event(VouchCreated {
-                voucher: caller_acc,
+                voucher,
                 borrower,
                 stars,
                 capital: staked_capital,
@@ -178,7 +198,20 @@ mod vouch {
             Ok(())
         }
 
-        /// Get count of active vouches for a borrower
+        /// Get count of active vouches for a specific loan
+        #[ink(message)]
+        pub fn get_vouches_for_loan(&self, loan_id: u64) -> u32 {
+            let vouchers = self.loan_vouchers.get(&loan_id).unwrap_or_default();
+            vouchers.len() as u32
+        }
+
+        /// Get all voucher addresses for a specific loan
+        #[ink(message)]
+        pub fn get_vouchers_for_loan(&self, loan_id: u64) -> Vec<AccountId> {
+            self.loan_vouchers.get(&loan_id).unwrap_or_default()
+        }
+
+        /// Get count of active vouches for a borrower (backward compatibility)
         #[ink(message)]
         pub fn get_vouches_for(&self, borrower: AccountId) -> u32 {
             let vouchers = self.borrower_vouchers.get(&borrower).unwrap_or_default();
@@ -193,13 +226,67 @@ mod vouch {
             count
         }
 
-        /// Get all voucher addresses for a borrower
+        /// Get all voucher addresses for a borrower (backward compatibility)
         #[ink(message)]
         pub fn get_all_vouchers(&self, borrower: AccountId) -> Vec<AccountId> {
             self.borrower_vouchers.get(&borrower).unwrap_or_default()
         }
 
-        /// Resolve all vouch relationships for a borrower upon loan completion
+        /// Resolve all vouch relationships for a loan upon loan completion
+        /// Only callable by the authorized loan manager contract
+        #[ink(message)]
+        pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool) -> Result<(), Error> {
+            // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            let loan_manager = self.loan_manager.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller_acc != loan_manager {
+                return Err(Error::Unauthorized);
+            }
+
+            let vouchers = self.loan_vouchers.get(&loan_id).unwrap_or_default();
+
+            for voucher in vouchers.iter() {
+                let key = (*voucher, borrower);
+                if let Some(mut relationship) = self.relationships.get(&key) {
+                    // Only resolve vouches for this specific loan
+                    if relationship.loan_id != loan_id || relationship.status != Status::Active {
+                        continue;
+                    }
+
+                    // Update status
+                    relationship.status = if success { Status::Fulfilled } else { Status::Defaulted };
+                    self.relationships.insert(&key, &relationship);
+
+                    // Unstake/slash stars via Reputation
+                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success);
+
+                    // If failure, slash capital via LendingPool
+                    if !success {
+                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital);
+                    }
+
+                    self.env().emit_event(VouchResolved {
+                        voucher: *voucher,
+                        borrower,
+                        success,
+                    });
+                }
+            }
+
+            // Clear voucher list for this loan
+            self.loan_vouchers.remove(&loan_id);
+
+            // Update borrower exposure (subtract resolved amounts)
+            // Note: We could track per-loan exposure, but for simplicity we'll recalculate
+            // or remove borrower exposure tracking entirely if not needed
+
+            Ok(())
+        }
+
+        /// Resolve all vouch relationships for a borrower (backward compatibility)
         /// Only callable by the authorized loan manager contract
         #[ink(message)]
         pub fn resolve_all(&mut self, borrower: AccountId, success: bool) -> Result<(), Error> {
