@@ -17,6 +17,7 @@ mod config {
         boost: u64,
         min_stars_to_vouch: u32,
         cooldown_period: Timestamp,
+        loan_term: Timestamp, // Default loan term (separate from cooldown)
         exposure_cap: u64,
         reserve_factor: u8,
         max_rate: u64,
@@ -54,7 +55,8 @@ mod config {
         pub const DEFAULT_SLOPE2: u64 = 75_000_000_000; // +75% post-optimal
         pub const DEFAULT_BOOST: u64 = 2_000_000_000; // +2 boost
         pub const DEFAULT_MIN_STARS_TO_VOUCH: u32 = 50;
-        pub const DEFAULT_COOLDOWN_PERIOD: Timestamp = 2_592_000_000; // 30 days in ms
+        pub const DEFAULT_COOLDOWN_PERIOD: Timestamp = 60_000; // 1 minute in ms (for demo - can be changed later)
+        pub const DEFAULT_LOAN_TERM: Timestamp = 2_592_000_000; // 30 days in ms
         pub const DEFAULT_EXPOSURE_CAP: u64 = 50_000_000; // 5% scaled by 1e9
         pub const DEFAULT_RESERVE_FACTOR: u8 = 20; // 20%
         pub const DEFAULT_MAX_RATE: u64 = 100_000_000_000; // Cap at 100%
@@ -88,6 +90,7 @@ mod config {
                 boost: Self::DEFAULT_BOOST,
                 min_stars_to_vouch: Self::DEFAULT_MIN_STARS_TO_VOUCH,
                 cooldown_period: Self::DEFAULT_COOLDOWN_PERIOD,
+                loan_term: Self::DEFAULT_LOAN_TERM,
                 exposure_cap: Self::DEFAULT_EXPOSURE_CAP,
                 reserve_factor: Self::DEFAULT_RESERVE_FACTOR,
                 max_rate: Self::DEFAULT_MAX_RATE,
@@ -164,6 +167,13 @@ mod config {
         pub fn update_cooldown_period(&mut self, new_period: Timestamp) -> ConfigResult<()> {
             self.ensure_admin()?;
             self.cooldown_period = new_period;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_loan_term(&mut self, new_term: Timestamp) -> ConfigResult<()> {
+            self.ensure_admin()?;
+            self.loan_term = new_term;
             Ok(())
         }
 
@@ -289,6 +299,11 @@ mod config {
         #[ink(message)]
         pub fn get_cooldown_period(&self) -> Timestamp {
             self.cooldown_period
+        }
+
+        #[ink(message)]
+        pub fn get_loan_term(&self) -> Timestamp {
+            self.loan_term
         }
 
         #[ink(message)]

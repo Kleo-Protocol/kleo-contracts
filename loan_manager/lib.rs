@@ -160,7 +160,7 @@ mod loan_manager {
             let adjusted_rate = self.adjust_rate_by_stars(base_rate, stars);
 
             // Get loan term from config (default 30 days in ms)
-            let term = self.config.get_cooldown_period(); // Using cooldown as default term
+            let term = self.config.get_loan_term();
 
             // Create pending loan record (no vouches yet, no disbursement)
             let loan_id = self.next_loan_id.get_or_default();

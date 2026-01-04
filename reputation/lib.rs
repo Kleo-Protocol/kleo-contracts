@@ -155,7 +155,7 @@ mod reputation {
             let cooldown_period = self.config.get_cooldown_period();
 
             let mut rep = self.user_reps.get(&user).unwrap_or(UserReputation {
-                stars: 1,
+                stars: 7, // user starts with 7 stars
                 stars_at_stake: 0,
                 loan_history: Vec::new(),
                 vouch_history: Vec::new(),
