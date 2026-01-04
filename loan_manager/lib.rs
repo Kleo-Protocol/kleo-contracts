@@ -111,8 +111,7 @@ mod loan_manager {
                 ink::env::call::FromAddr::from_addr(lending_pool_address);
             let vouch: VouchRef =
                 ink::env::call::FromAddr::from_addr(vouch_address);
-            let lending_pool_acc = Self::env().to_account_id(lending_pool_address);
-            let mut instance = Self {
+            Self {
                 config,
                 reputation,
                 lending_pool,
@@ -120,9 +119,19 @@ mod loan_manager {
                 vouch,
                 loans: Mapping::default(),
                 next_loan_id: Lazy::default(),
-            };
-            instance.lending_pool_address.set(&lending_pool_acc);
-            instance
+            }
+        }
+
+        /// Set the lending pool address (can only be set once)
+        /// This should be called after deployment to store the AccountId for cross-contract calls
+        #[ink(message)]
+        pub fn set_lending_pool(&mut self, lending_pool_address: AccountId) -> Result<(), Error> {
+            // Check if lending pool address is already set
+            if self.lending_pool_address.get().is_some() {
+                return Err(Error::Unauthorized);
+            }
+            self.lending_pool_address.set(&lending_pool_address);
+            Ok(())
         }
 
         /// Request a loan from the lending pool
