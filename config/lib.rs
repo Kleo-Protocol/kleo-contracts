@@ -111,8 +111,16 @@ mod config {
 
         /// Ensure that the caller of other functions is the admin
         fn ensure_admin(&self) -> ConfigResult<()> {
+            // #region agent log
+            let log_data = format!(r#"{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"config/lib.rs:{}","message":"ensure_admin entry","data":{{"admin":"{:?}"}},"timestamp":{}}}"#, line!(), self.admin, 0u64);
+            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/fabiansanchezd/Documents/kleo-contracts/.cursor/debug.log").and_then(|mut f| std::io::Write::write_all(&mut f, format!("{}\n", log_data).as_bytes()));
+            // #endregion
             let caller = self.env().caller();
             let caller_acc = self.env().to_account_id(caller);
+            // #region agent log
+            let log_data2 = format!(r#"{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"config/lib.rs:{}","message":"ensure_admin caller check","data":{{"caller":"{:?}","admin":"{:?}","match":{}}},"timestamp":{}}}"#, line!(), caller_acc, self.admin, caller_acc == self.admin, 0u64);
+            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/fabiansanchezd/Documents/kleo-contracts/.cursor/debug.log").and_then(|mut f| std::io::Write::write_all(&mut f, format!("{}\n", log_data2).as_bytes()));
+            // #endregion
             if caller_acc != self.admin {
                 return Err(Error::NotAdmin);
             }

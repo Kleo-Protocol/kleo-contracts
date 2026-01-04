@@ -43,6 +43,7 @@ mod reputation {
     /// All information that is needed to store in the contract
     #[ink(storage)]
     pub struct Reputation {
+        admin: AccountId, // Admin address (deployer)
         config: ConfigRef, // Contract address of Config
         user_reps: Mapping<AccountId, UserReputation>,
         vouch_contract: Lazy<Option<AccountId>>, // Authorized vouch contract address
@@ -66,12 +67,25 @@ mod reputation {
         pub fn new(config_address: Address) -> Self {
             let config =
                 ink::env::call::FromAddr::from_addr(config_address);
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
             Self {
+                admin: caller_acc, // Deployer becomes admin
                 config,
                 user_reps: Mapping::default(),
                 vouch_contract: Lazy::default(),
                 loan_manager: Lazy::default(),
             }
+        }
+
+        /// Internal helper to check if caller is admin
+        fn ensure_admin(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
+            if caller_acc != self.admin {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
         }
 
         /// Set the vouch contract address (can only be set once)
@@ -274,6 +288,78 @@ mod reputation {
             self.user_reps.insert(&user, &rep);
 
             Ok(())
+        }
+
+        /// Admin function: Set stars for a user (for testing)
+        /// Only callable by admin
+        #[ink(message)]
+        pub fn admin_set_stars(&mut self, user: AccountId, stars: u32) -> Result<(), Error> {
+            self.ensure_admin()?;
+
+            let now = Self::env().block_timestamp();
+            let mut rep = self.user_reps.get(&user).unwrap_or(UserReputation {
+                stars: 7,
+                stars_at_stake: 0,
+                loan_history: Vec::new(),
+                vouch_history: Vec::new(),
+                creation_time: now,
+                banned: false,
+            });
+
+            rep.stars = stars;
+            rep.banned = false; // Unban if setting stars > 0
+
+            self.user_reps.insert(&user, &rep);
+
+            Ok(())
+        }
+
+        /// Admin function: Add stars to a user (for testing)
+        /// Only callable by admin
+        #[ink(message)]
+        pub fn admin_add_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
+            self.ensure_admin()?;
+
+            let now = Self::env().block_timestamp();
+            let mut rep = self.user_reps.get(&user).unwrap_or(UserReputation {
+                stars: 7,
+                stars_at_stake: 0,
+                loan_history: Vec::new(),
+                vouch_history: Vec::new(),
+                creation_time: now,
+                banned: false,
+            });
+
+            rep.stars = rep.stars.saturating_add(amount);
+            rep.banned = false; // Unban if adding stars
+
+            self.user_reps.insert(&user, &rep);
+
+            Ok(())
+        }
+
+        /// Admin function: Unban a user (for testing)
+        /// Only callable by admin
+        #[ink(message)]
+        pub fn admin_unban_user(&mut self, user: AccountId) -> Result<(), Error> {
+            self.ensure_admin()?;
+
+            let mut rep = self.user_reps.get(&user).ok_or(Error::UserNotFound)?;
+            
+            if rep.stars == 0 {
+                rep.stars = 7; // Give at least 7 stars when unbanning
+            }
+            rep.banned = false;
+
+            self.user_reps.insert(&user, &rep);
+
+            Ok(())
+        }
+
+        /// Admin function: Get admin address (for verification)
+        #[ink(message)]
+        pub fn get_admin(&self) -> AccountId {
+            self.admin
         }
     }
 }
