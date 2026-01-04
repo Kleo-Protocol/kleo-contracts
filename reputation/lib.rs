@@ -43,11 +43,11 @@ mod reputation {
     /// All information that is needed to store in the contract
     #[ink(storage)]
     pub struct Reputation {
-        admin: AccountId, // Admin address (deployer)
+        admin: Address, // Admin address (deployer)
         config: ConfigRef, // Contract address of Config
         user_reps: Mapping<AccountId, UserReputation>,
-        vouch_contract: Lazy<Option<AccountId>>, // Authorized vouch contract address
-        loan_manager: Lazy<Option<AccountId>>, // Authorized loan manager contract address
+        vouch_contract: Lazy<Option<Address>>, // Authorized vouch contract address
+        loan_manager: Lazy<Option<Address>>, // Authorized loan manager contract address
     }
 
 
@@ -68,9 +68,8 @@ mod reputation {
             let config =
                 ink::env::call::FromAddr::from_addr(config_address);
             let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             Self {
-                admin: caller_acc, // Deployer becomes admin
+                admin: caller, // Deployer becomes admin
                 config,
                 user_reps: Mapping::default(),
                 vouch_contract: Lazy::default(),
@@ -81,8 +80,7 @@ mod reputation {
         /// Internal helper to check if caller is admin
         fn ensure_admin(&self) -> Result<(), Error> {
             let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            if caller_acc != self.admin {
+            if caller != self.admin {
                 return Err(Error::Unauthorized);
             }
             Ok(())
@@ -91,7 +89,7 @@ mod reputation {
         /// Set the vouch contract address (can only be set once)
         /// This should be called after the Vouch contract is deployed
         #[ink(message)]
-        pub fn set_vouch_contract(&mut self, vouch_address: AccountId) -> Result<(), Error> {
+        pub fn set_vouch_contract(&mut self, vouch_address: Address) -> Result<(), Error> {
             // Check if vouch contract is already set
             if self.vouch_contract.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -103,38 +101,12 @@ mod reputation {
         /// Set the loan manager contract address (can only be set once)
         /// This should be called after the LoanManager contract is deployed
         #[ink(message)]
-        pub fn set_loan_manager(&mut self, loan_manager_address: AccountId) -> Result<(), Error> {
+        pub fn set_loan_manager(&mut self, loan_manager_address: Address) -> Result<(), Error> {
             // Check if loan manager is already set
             if self.loan_manager.get().is_some() {
                 return Err(Error::Unauthorized);
             }
             self.loan_manager.set(&Some(loan_manager_address));
-            Ok(())
-        }
-
-        /// Internal helper to check if caller is the authorized vouch contract
-        fn ensure_vouch_contract(&self) -> Result<(), Error> {
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            let vouch_contract = self.vouch_contract.get()
-                .and_then(|opt| opt)
-                .ok_or(Error::Unauthorized)?;
-            if caller_acc != vouch_contract {
-                return Err(Error::Unauthorized);
-            }
-            Ok(())
-        }
-
-        /// Internal helper to check if caller is the authorized loan manager
-        fn ensure_loan_manager(&self) -> Result<(), Error> {
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            let loan_manager = self.loan_manager.get()
-                .and_then(|opt| opt)
-                .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
-                return Err(Error::Unauthorized);
-            }
             Ok(())
         }
 
@@ -149,19 +121,15 @@ mod reputation {
         #[ink(message)]
         pub fn add_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
             // Verify caller is an authorized contract (loan manager or vouch contract)
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            let loan_manager = self.loan_manager.get().and_then(|opt| opt);
-            let vouch_contract = self.vouch_contract.get().and_then(|opt| opt);
-            
-            let is_authorized = match (loan_manager, vouch_contract) {
-                (Some(lm), Some(vc)) => caller_acc == lm || caller_acc == vc,
-                (Some(lm), None) => caller_acc == lm,
-                (None, Some(vc)) => caller_acc == vc,
-                (None, None) => false,
-            };
-            
-            if !is_authorized {
+            if self.ensure_loan_manager().is_ok() {
+                if !self.ensure_vouch_contract().is_ok() {
+                    return Err(Error::Unauthorized);
+                }
+            } else if self.ensure_vouch_contract().is_ok() {
+                if !self.ensure_loan_manager().is_ok() {
+                    return Err(Error::Unauthorized);
+                }
+            } else {
                 return Err(Error::Unauthorized);
             }
 
@@ -290,6 +258,30 @@ mod reputation {
             Ok(())
         }
 
+        /// Internal helper to check if caller is the authorized vouch contract
+        fn ensure_vouch_contract(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
+            let vouch_contract = self.vouch_contract.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller != vouch_contract {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
+        }
+
+        /// Internal helper to check if caller is the authorized loan manager
+        fn ensure_loan_manager(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
+            let loan_manager = self.loan_manager.get()
+                .and_then(|opt| opt)
+                .ok_or(Error::Unauthorized)?;
+            if caller != loan_manager {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
+        }
+
         /// Admin function: Set stars for a user (for testing)
         /// Only callable by admin
         #[ink(message)]
@@ -358,7 +350,7 @@ mod reputation {
 
         /// Admin function: Get admin address (for verification)
         #[ink(message)]
-        pub fn get_admin(&self) -> AccountId {
+        pub fn get_admin(&self) -> Address {
             self.admin
         }
     }

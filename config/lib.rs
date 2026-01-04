@@ -9,7 +9,7 @@ mod config {
     /// All information stored for the configurable parameters of the protocol
     #[ink(storage)]
     pub struct Config {
-        admin: AccountId,
+        admin: Address,
         base_interest_rate: u64,
         optimal_utilization: u64,
         slope1: u64,
@@ -43,6 +43,7 @@ mod config {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
         NotAdmin,
+        InvalidValue,
     }
 
     // Custom result type for the contract
@@ -80,9 +81,8 @@ mod config {
         #[ink(constructor)]
         pub fn new() -> Self {
             let caller= Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             Self { 
-                admin: caller_acc,
+                admin: caller,
                 base_interest_rate: Self::DEFAULT_BASE_INTEREST_RATE,
                 optimal_utilization: Self::DEFAULT_OPTIMAL_UTILIZATION,
                 slope1: Self::DEFAULT_SLOPE1,
@@ -111,17 +111,8 @@ mod config {
 
         /// Ensure that the caller of other functions is the admin
         fn ensure_admin(&self) -> ConfigResult<()> {
-            // #region agent log
-            let log_data = format!(r#"{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"config/lib.rs:{}","message":"ensure_admin entry","data":{{"admin":"{:?}"}},"timestamp":{}}}"#, line!(), self.admin, 0u64);
-            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/fabiansanchezd/Documents/kleo-contracts/.cursor/debug.log").and_then(|mut f| std::io::Write::write_all(&mut f, format!("{}\n", log_data).as_bytes()));
-            // #endregion
             let caller = self.env().caller();
-            let caller_acc = self.env().to_account_id(caller);
-            // #region agent log
-            let log_data2 = format!(r#"{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"config/lib.rs:{}","message":"ensure_admin caller check","data":{{"caller":"{:?}","admin":"{:?}","match":{}}},"timestamp":{}}}"#, line!(), caller_acc, self.admin, caller_acc == self.admin, 0u64);
-            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/Users/fabiansanchezd/Documents/kleo-contracts/.cursor/debug.log").and_then(|mut f| std::io::Write::write_all(&mut f, format!("{}\n", log_data2).as_bytes()));
-            // #endregion
-            if caller_acc != self.admin {
+            if caller != self.admin {
                 return Err(Error::NotAdmin);
             }
             Ok(())
@@ -268,6 +259,10 @@ mod config {
         #[ink(message)]
         pub fn update_max_star_discount_percent(&mut self, new_max: u64) -> ConfigResult<()> {
             self.ensure_admin()?;
+            // Validate: max discount should be between 0 and 100 (percentage)
+            if new_max > 100 {
+                return Err(Error::InvalidValue);
+            }
             self.max_star_discount_percent = new_max;
             Ok(())
         }

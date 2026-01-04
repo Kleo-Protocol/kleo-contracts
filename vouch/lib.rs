@@ -41,7 +41,7 @@ mod vouch {
         config: ConfigRef, // Contract address of Config
         reputation: ReputationRef, // Contract address of Reputation
         lending_pool: LendingPoolRef, // Contract address of LendingPool
-        loan_manager: Lazy<Option<AccountId>>, // Contract address of LoanManager (authorized to resolve vouches)
+        loan_manager: Lazy<Option<Address>>, // Contract address of LoanManager (authorized to resolve vouches)
         relationships: Mapping<(AccountId, AccountId), VouchRelationship>, // (voucher, borrower) -> relationship
         loan_vouchers: Mapping<u64, Vec<AccountId>>, // loan_id -> list of vouchers
         borrower_exposure: Mapping<AccountId, Balance>,
@@ -103,7 +103,7 @@ mod vouch {
         /// Set the loan manager address (can only be set once)
         /// This should be called after the LoanManager contract is deployed
         #[ink(message)]
-        pub fn set_loan_manager(&mut self, loan_manager: AccountId) -> Result<(), Error> {
+        pub fn set_loan_manager(&mut self, loan_manager: Address) -> Result<(), Error> {
             // Check if loan manager is already set
             if self.loan_manager.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -118,17 +118,17 @@ mod vouch {
         pub fn vouch_for_loan(&mut self, loan_id: u64, borrower: AccountId, voucher: AccountId, stars: u32, capital_percent: u8) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
             let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if caller != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
             let voucher_stars = self.reputation.get_stars(voucher);
 
-            if self.reputation.can_vouch(borrower) == false {
+            // Check if voucher meets minimum stars requirement to vouch
+            if !self.reputation.can_vouch(voucher) {
                 return Err(Error::UnableToVouch);
             }
             if voucher_stars < stars {
@@ -136,6 +136,9 @@ mod vouch {
             }
 
             let deposit = self.lending_pool.get_user_deposit(voucher);
+            if deposit == 0 {
+                return Err(Error::NotEnoughCapital);
+            }
 
             // Calculate staked capital (percent of deposit)
             let staked_capital = (deposit * (capital_percent as Balance)) / 100;
@@ -143,10 +146,7 @@ mod vouch {
                 return Err(Error::ZeroAmount);
             }
 
-            // Stake stars in Reputation
-            self.reputation.stake_stars(voucher, stars).map_err(|_| Error::UnableToVouch)?;
-
-            // Check exposure cap
+            // Check exposure cap BEFORE staking (to avoid staking if cap is exceeded)
             let exposure_cap = self.config.get_exposure_cap();
             let current_exposure = self.borrower_exposure.get(&borrower).unwrap_or(0);
             let total_liquidity = self.lending_pool.get_total_liquidity();
@@ -158,6 +158,9 @@ mod vouch {
             if max_allowed == 0 || current_exposure.saturating_add(staked_capital) > max_allowed {
                 return Err(Error::ExposureCapExceeded);
             }
+
+            // Stake stars in Reputation (after all validations pass)
+            self.reputation.stake_stars(voucher, stars).map_err(|_| Error::UnableToVouch)?;
 
             // Store the relationship
             let key = (voucher, borrower);
@@ -238,11 +241,10 @@ mod vouch {
         pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
             let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if caller != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
@@ -279,9 +281,23 @@ mod vouch {
             // Clear voucher list for this loan
             self.loan_vouchers.remove(&loan_id);
 
-            // Update borrower exposure (subtract resolved amounts)
-            // Note: We could track per-loan exposure, but for simplicity we'll recalculate
-            // or remove borrower exposure tracking entirely if not needed
+            // Decrement borrower exposure by total staked capital for this loan
+            let mut current_exposure = self.borrower_exposure.get(&borrower).unwrap_or(0);
+            let mut total_staked_for_loan = 0u128;
+            for voucher in vouchers.iter() {
+                let key = (*voucher, borrower);
+                if let Some(rel) = self.relationships.get(&key) {
+                    if rel.loan_id == loan_id {
+                        total_staked_for_loan += rel.staked_capital as u128;
+                    }
+                }
+            }
+            current_exposure = current_exposure.saturating_sub(total_staked_for_loan as Balance);
+            if current_exposure == 0 {
+                self.borrower_exposure.remove(&borrower);
+            } else {
+                self.borrower_exposure.insert(&borrower, &current_exposure);
+            }
 
             Ok(())
         }
@@ -292,11 +308,10 @@ mod vouch {
         pub fn resolve_all(&mut self, borrower: AccountId, success: bool) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
             let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if caller != loan_manager {
                 return Err(Error::Unauthorized);
             }
 

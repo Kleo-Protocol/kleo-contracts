@@ -92,7 +92,7 @@ mod loan_manager {
         config: ConfigRef,
         reputation: ReputationRef,
         lending_pool: LendingPoolRef,
-        lending_pool_address: Lazy<AccountId>,
+        lending_pool_address: Lazy<Address>,
         vouch: VouchRef,
         loans: Mapping<u64, Loan>,
         next_loan_id: Lazy<u64>,
@@ -127,7 +127,7 @@ mod loan_manager {
         /// Set the lending pool address (can only be set once)
         /// This should be called after deployment to store the AccountId for cross-contract calls
         #[ink(message)]
-        pub fn set_lending_pool(&mut self, lending_pool_address: AccountId) -> Result<(), Error> {
+        pub fn set_lending_pool(&mut self, lending_pool_address: Address) -> Result<(), Error> {
             // Check if lending pool address is already set
             if self.lending_pool_address.get().is_some() {
                 return Err(Error::Unauthorized);
