@@ -13,7 +13,7 @@ mod config {
     /// All information stored for the configurable parameters of the protocol
     #[ink(storage)]
     pub struct Config {
-        admin: Option<AccountId>,
+        admin: AccountId,
         base_interest_rate: u64,
         boost: u64,
         min_stars_to_vouch: u32,
@@ -41,7 +41,7 @@ mod config {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
         NotAdmin,
-         InvalidValue,
+        InvalidValue,
         AlreadyAdmin
      }
 
@@ -53,7 +53,7 @@ mod config {
         #[ink(constructor)]
         pub fn new() -> Self {
             Self {
-                admin: None,
+                admin: Address::from(&[0; 20]),
                 base_interest_rate: 10_000_000_000, // 10% scaled by 1e9
                 boost: 2_000_000_000, // +2 boost
                 min_stars_to_vouch: 50,
@@ -75,36 +75,30 @@ mod config {
         }
 
         #[ink(message)]
-        pub fn set_admin(&mut self, admin: AccountId) -> ConfigResult<()> {
-            if self.admin.is_some() {
-                return Err(Error::AlreadyAdmin);
-            }
-            self.admin = Some(admin);
+        pub fn set_admin(&mut self, admin_account_id: AccountId) -> ConfigResult<()> {
+            self.admin = admin_account_id;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn get_converted_caller(&self) -> AccountId {
-            let caller = self.env().caller();
-            self.env().to_account_id(caller)
+        pub fn get_admin(&self) -> Address {
+            self.admin
         }
 
 
         /// Ensure that the caller of other functions is the admin
-        fn ensure_admin(&mut self) -> ConfigResult<()> {
-            let caller = self.get_converted_caller();
-            match self.admin {
-                Some(admin) if admin == caller => Ok(()),
-                Some(_) => Err(Error::NotAdmin),
-                None => Err(Error::NotAdmin),
+        fn ensure_admin(&mut self, caller_account_id: AccountId) -> ConfigResult<()> {
+            if caller_account_id != self.admin {
+                return Err(Error::NotAdmin);
             }
+            Ok(())
         }
 
         /// Setter functions for configuration parameters
 
         #[ink(message)]
-        pub fn update_base_interest_rate(&mut self, new_rate: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_base_interest_rate(&mut self, new_rate: u64, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.base_interest_rate = new_rate;
             Ok(())
         }
@@ -143,96 +137,96 @@ mod config {
 
 
         #[ink(message)]
-        pub fn update_boost(&mut self, new_boost: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_boost(&mut self, new_boost: u64, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.boost = new_boost;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_min_stars_to_vouch(&mut self, new_min: u32) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_min_stars_to_vouch(&mut self, new_min: u32, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.min_stars_to_vouch = new_min;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_cooldown_period(&mut self, new_period: Timestamp) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_cooldown_period(&mut self, new_period: Timestamp, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.cooldown_period = new_period;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_loan_term(&mut self, new_term: Timestamp) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_term(&mut self, new_term: Timestamp, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_term = new_term;
             Ok(())
         }
 
 
         #[ink(message)]
-        pub fn update_loan_tier_scaling_factor(&mut self, new_factor: Balance) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_tier_scaling_factor(&mut self, new_factor: Balance, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_tier_scaling_factor = new_factor;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_loan_tier1_max_scaled_amount(&mut self, new_max: Balance) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_tier1_max_scaled_amount(&mut self, new_max: Balance, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_tier1_max_scaled_amount = new_max;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_loan_tier2_max_scaled_amount(&mut self, new_max: Balance) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_tier2_max_scaled_amount(&mut self, new_max: Balance, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_tier2_max_scaled_amount = new_max;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_loan_tier1_requirements(&mut self, min_stars: u32, min_vouches: u32) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_tier1_requirements(&mut self, min_stars: u32, min_vouches: u32, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_tier1_min_stars = min_stars;
             self.loan_tier1_min_vouches = min_vouches;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_loan_tier2_requirements(&mut self, min_stars: u32, min_vouches: u32) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_tier2_requirements(&mut self, min_stars: u32, min_vouches: u32, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_tier2_min_stars = min_stars;
             self.loan_tier2_min_vouches = min_vouches;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_loan_tier3_requirements(&mut self, min_stars: u32, min_vouches: u32) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_loan_tier3_requirements(&mut self, min_stars: u32, min_vouches: u32, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.loan_tier3_min_stars = min_stars;
             self.loan_tier3_min_vouches = min_vouches;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_default_grace_period(&mut self, new_period: Timestamp) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_default_grace_period(&mut self, new_period: Timestamp, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.default_grace_period = new_period;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_star_discount_percent_per_star(&mut self, new_discount: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_star_discount_percent_per_star(&mut self, new_discount: u64, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             self.star_discount_percent_per_star = new_discount;
             Ok(())
         }
 
         #[ink(message)]
-        pub fn update_max_star_discount_percent(&mut self, new_max: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
+        pub fn update_max_star_discount_percent(&mut self, new_max: u64, caller_account_id: AccountId) -> ConfigResult<()> {
+            self.ensure_admin(caller_account_id)?;
             // Validate: max discount should be between 0 and 100 (percentage)
             if new_max > 100 {
                 return Err(Error::InvalidValue);

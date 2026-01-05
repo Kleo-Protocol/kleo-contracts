@@ -117,26 +117,22 @@ mod lending_pool {
         }
 
         /// Internal helper to check if caller is the authorized vouch contract
-        fn ensure_vouch_contract(&self) -> Result<(), Error> {
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
+        fn ensure_vouch_contract(&self, caller_account_id: AccountId) -> Result<(), Error> {
             let vouch_contract = self.vouch_contract.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != vouch_contract {
+            if caller_account_id != vouch_contract {
                 return Err(Error::Unauthorized);
             }
             Ok(())
         }
 
         /// Internal helper to check if caller is the authorized loan manager
-        fn ensure_loan_manager(&self) -> Result<(), Error> {
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
+        fn ensure_loan_manager(&self, caller_account_id: AccountId) -> Result<(), Error> {
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if caller_account_id != loan_manager {
                 return Err(Error::Unauthorized);
             }
             Ok(())
@@ -145,7 +141,7 @@ mod lending_pool {
         /// Deposits to the lending pool
         /// Returns the new balance after deposit for debugging
         #[ink(message, payable)]
-        pub fn deposit(&mut self) -> Result<Balance, Error> {
+        pub fn deposit(&mut self, account_id: AccountId) -> Result<Balance, Error> {
             let deposited_u256 = self.env().transferred_value();
             if deposited_u256 == U256::zero() {
                 return Err(Error::ZeroAmount);
@@ -156,8 +152,7 @@ mod lending_pool {
             }
             let deposited: Balance = deposited_u256.as_u128();
 
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
+            let caller_acc = account_id;
 
             // Update the user's deposit balance
             let current_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
@@ -197,9 +192,8 @@ mod lending_pool {
 
         /// Withdraw funds from the lending pool
         #[ink(message)]
-        pub fn withdraw(&mut self, amount: Balance) -> Result<(), Error> {
-            let caller= Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
+        pub fn withdraw(&mut self, amount: Balance, account_id: AccountId) -> Result<(), Error> {
+            let caller_acc = account_id;
             if amount == 0 {
                 return Err(Error::ZeroAmount);
             }
@@ -375,12 +369,11 @@ mod lending_pool {
 
         /// Get user's accrued yield
         #[ink(message)]
-        pub fn get_user_yield(&mut self) -> Balance {
+        pub fn get_user_yield(&mut self, account_id: AccountId) -> Balance {
             // First, ensure interest is up-to-date
             self.accrue_interest();
 
-            let caller= Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
+            let caller_acc = account_id;
 
             let user_deposit = self.user_deposits.get(&caller_acc).unwrap_or(0);
             if user_deposit == 0 {
@@ -421,9 +414,9 @@ mod lending_pool {
         /// Disburse part of liquidity (add a borrow basically)
         /// Only callable by the authorized loan manager contract
         #[ink(message)]
-        pub fn disburse(&mut self, amount: Balance, to: AccountId) -> Result<(), Error> {
+        pub fn disburse(&mut self, amount: Balance, to: AccountId, caller_account_id: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
-            self.ensure_loan_manager()?;
+            self.ensure_loan_manager(caller_account_id)?;
 
             self.accrue_interest();
 
@@ -483,9 +476,9 @@ mod lending_pool {
         /// Slash part of the position of a voucher
         /// Only callable by the authorized vouch contract
         #[ink(message)]
-        pub fn slash_stake(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
+        pub fn slash_stake(&mut self, user: AccountId, amount: Balance, caller_account_id: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized vouch contract
-            self.ensure_vouch_contract()?;
+            self.ensure_vouch_contract(caller_account_id)?;
 
             self.accrue_interest();
             

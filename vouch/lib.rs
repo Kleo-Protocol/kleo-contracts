@@ -41,7 +41,7 @@ mod vouch {
         config: ConfigRef, // Contract address of Config
         reputation: ReputationRef, // Contract address of Reputation
         lending_pool: LendingPoolRef, // Contract address of LendingPool
-        loan_manager: Lazy<Option<AccountId>>, // Contract address of LoanManager (authorized to resolve vouches)
+        loan_manager: Lazy<Option<Address>, // Contract address of LoanManager (authorized to resolve vouches)
         relationships: Mapping<(AccountId, AccountId), VouchRelationship>, // (voucher, borrower) -> relationship
         loan_vouchers: Mapping<u64, Vec<AccountId>>, // loan_id -> list of vouchers
         borrower_exposure: Mapping<AccountId, Balance>,
@@ -103,7 +103,7 @@ mod vouch {
         /// Set the loan manager address (can only be set once)
         /// This should be called after the LoanManager contract is deployed
         #[ink(message)]
-        pub fn set_loan_manager(&mut self, loan_manager: AccountId) -> Result<(), Error> {
+        pub fn set_loan_manager(&mut self, loan_manager: Address) -> Result<(), Error> {
             // Check if loan manager is already set
             if self.loan_manager.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -115,14 +115,12 @@ mod vouch {
         /// Vouch for a specific loan (called by loan_manager after validation)
         /// Only callable by loan_manager
         #[ink(message)]
-        pub fn vouch_for_loan(&mut self, loan_id: u64, borrower: AccountId, voucher: AccountId, stars: u32, capital_percent: u8) -> Result<(), Error> {
+        pub fn vouch_for_loan(&mut self, loan_id: u64, borrower: AccountId, voucher: AccountId, stars: u32, capital_percent: u8, loan_manager_account_id: AccountId, vouch_contract_account_id: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            let loan_manager = self.loan_manager.get()
+≈            let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if loan_manager_account_id != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
@@ -161,7 +159,7 @@ mod vouch {
             }
 
             // Stake stars in Reputation (after all validations pass)
-            self.reputation.stake_stars(voucher, stars).map_err(|_| Error::UnableToVouch)?;
+            self.reputation.stake_stars(voucher, stars, vouch_contract_account_id).map_err(|_| Error::UnableToVouch)?;
 
             // Store the relationship
             let key = (voucher, borrower);
@@ -239,14 +237,12 @@ mod vouch {
         /// Resolve all vouch relationships for a loan upon loan completion
         /// Only callable by the authorized loan manager contract
         #[ink(message)]
-        pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool) -> Result<(), Error> {
+        pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool, loan_manager_account_id: AccountId, vouch_contract_account_id: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if loan_manager_account_id != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
@@ -265,11 +261,11 @@ mod vouch {
                     self.relationships.insert(&key, &relationship);
 
                     // Unstake/slash stars via Reputation
-                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success);
+                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success, vouch_contract_account_id);
 
                     // If failure, slash capital via LendingPool
                     if !success {
-                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital);
+                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital, vouch_contract_account_id);
                     }
 
                     self.env().emit_event(VouchResolved {
@@ -307,14 +303,12 @@ mod vouch {
         /// Resolve all vouch relationships for a borrower (backward compatibility)
         /// Only callable by the authorized loan manager contract
         #[ink(message)]
-        pub fn resolve_all(&mut self, borrower: AccountId, success: bool) -> Result<(), Error> {
+        pub fn resolve_all(&mut self, borrower: AccountId, success: bool, loan_manager_account_id: AccountId, vouch_contract_account_id: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
-            let caller = Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_acc != loan_manager {
+            if loan_manager_account_id != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
@@ -332,11 +326,11 @@ mod vouch {
                     self.relationships.insert(&key, &relationship);
 
                     // Unstake/slash stars via Reputation
-                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success);
+                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success, vouch_contract_account_id);
 
                     // If failure, slash capital via LendingPool
                     if !success {
-                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital);
+                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital, vouch_contract_account_id);
                     }
 
                     self.env().emit_event(VouchResolved {
