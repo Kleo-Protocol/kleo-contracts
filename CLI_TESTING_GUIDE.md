@@ -143,18 +143,18 @@ As the admin (contract deployer), set stars for testing:
 1. **Alice deposits 1000 tokens**:
    - Contract: `LENDING_POOL_ADDRESS`
    - Message: `deposit`
-   - Value: `1000` (with 9 decimals: `1000000000000`)
+   - Value: `100` (with 9 decimals: `1000000000000`)
 
 2. **Bob deposits 1000 tokens**:
    - Contract: `LENDING_POOL_ADDRESS`
    - Message: `deposit`
-   - Value: `1000` (with 9 decimals: `1000000000000`)
+   - Value: `100` (with 9 decimals: `1000000000000`)
 
 3. **Verify deposits**:
    - Contract: `LENDING_POOL_ADDRESS`
    - Message: `get_user_deposit`
-   - Args: `Alice's AccountId` → Should return `100000000000000000000` (8 extra 0s)
-   - Message: `get_total_liquidity` → Should return `2000000000000`
+   - Args: `Alice's AccountId` → Should return `100000000000`
+   - Message: `get_total_liquidity` → Should return `200000000000`
 
 ### Step 3: Request a Loan
 
@@ -164,7 +164,7 @@ As the admin (contract deployer), set stars for testing:
    - Contract: `LOAN_MANAGER_ADDRESS`
    - Message: `request_loan`
    - Args: 
-     - `amount`: `500000000000` (500 tokens with 9 decimals)
+     - `amount`: `500000000000` (50 tokens with 10 decimals)
      - `purpose`: `[]` (empty Vec<u8>)
    - Note the returned `loan_id` (should be `0`)
 

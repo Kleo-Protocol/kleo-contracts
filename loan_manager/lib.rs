@@ -12,31 +12,25 @@ mod loan_manager {
     use reputation::ReputationRef;
     use lending_pool::LendingPoolRef;
     use vouch::VouchRef;
-    use ink::prelude::vec::Vec;
-    use ink::storage::Lazy;
     use ink::storage::Mapping;
     use ink::U256;
-    use ink::primitives::AccountIdMapper;
-
 
     /// Struct for loan information
     #[ink::storage_item(packed)]
     #[derive(Debug, PartialEq)]
     pub struct Loan {
         loan_id: u64,
-        borrower: AccountId,
-        amount: Balance,
         interest_rate: u64,
         term: Timestamp,
-        purpose: Vec<u8>,
         start_time: Timestamp,
+        amount: Balance,  // u128
+        borrower: AccountId,  // [u8; 32]
         status: LoanStatus,
-        vouchers: Vec<AccountId>
     }
 
     /// Enum for Loan Status
     #[ink::storage_item(packed)]
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, Eq, Copy, Clone)]
     pub enum LoanStatus {
         Pending,  // Waiting for vouches
         Active,   // Funded and active
@@ -92,10 +86,10 @@ mod loan_manager {
         config: ConfigRef,
         reputation: ReputationRef,
         lending_pool: LendingPoolRef,
-        lending_pool_address: Lazy<Address>,
+        lending_pool_address: Address,
         vouch: VouchRef,
         loans: Mapping<u64, Loan>,
-        next_loan_id: Lazy<u64>,
+        next_loan_id: u64,
     }
 
     impl LoanManager {
@@ -117,34 +111,29 @@ mod loan_manager {
                 config,
                 reputation,
                 lending_pool,
-                lending_pool_address: Lazy::default(),
+                lending_pool_address,
                 vouch,
                 loans: Mapping::default(),
-                next_loan_id: Lazy::default(),
+                next_loan_id: 1,
             }
         }
 
-        /// Set the lending pool address (can only be set once)
-        /// This should be called after deployment to store the AccountId for cross-contract calls
-        #[ink(message)]
-        pub fn set_lending_pool(&mut self, lending_pool_address: Address) -> Result<(), Error> {
-            // Check if lending pool address is already set
-            if self.lending_pool_address.get().is_some() {
-                return Err(Error::Unauthorized);
-            }
-            self.lending_pool_address.set(&lending_pool_address);
-            Ok(())
+        fn h160_to_assethub_account_id(addr: Address) -> [u8; 32] {
+            let mut out = [0u8; 32];
+            out[0..20].copy_from_slice(addr.as_ref());     // H160 bytes
+            out[20..32].fill(0xEE);                        // 12 bytes of 0xEE
+            out
         }
 
         /// Request a loan from the lending pool
         /// Creates a pending loan that requires vouches before disbursement
         #[ink(message)]
-        pub fn request_loan(&mut self, amount: Balance, _purpose: Vec<u8>) -> Result<u64, Error> {
+        pub fn request_loan(&mut self, amount: Balance, loan_term: Timestamp) -> Result<u64, Error> {
             if amount == 0 {
                 return Err(Error::ZeroAmount);
             }
-
-            let caller_acc = Self::env().to_account_id(Self::env().caller());
+            let caller = Self::env().caller();
+            let caller_acc: AccountId = Self::env().to_account_id(caller);
 
             // Calculate tier-based requirements for this loan amount
             let (min_stars, _min_vouches) = self.calculate_requirements(amount);
@@ -159,36 +148,31 @@ mod loan_manager {
             let base_rate = self.lending_pool.get_current_rate();
             let adjusted_rate = self.adjust_rate_by_stars(base_rate, stars);
 
-            // Get loan term from config (default 30 days in ms)
-            let term = self.config.get_loan_term();
-
             // Create pending loan record (no vouches yet, no disbursement)
-            let loan_id = self.next_loan_id.get_or_default();
+            let loan_id = self.next_loan_id;
             let loan = Loan {
                 loan_id,
-                borrower: caller_acc,
-                amount,
                 interest_rate: adjusted_rate,
-                term,
-                purpose: _purpose,
+                term: loan_term,
                 start_time: 0, // Will be set when loan becomes Active
                 status: LoanStatus::Pending,
-                vouchers: Vec::new(), // Empty until vouches are added
+                amount: amount,
+                borrower: caller_acc,
             };
 
             // Store the loan
             self.loans.insert(loan_id, &loan);
-            self.next_loan_id.set(&(loan_id + 1));
+            self.next_loan_id = loan_id + 1;
 
             // Emit LoanRequested event
             self.env().emit_event(LoanRequested {
                 id: loan_id,
                 borrower: caller_acc,
                 amount,
-                term,
+                term: loan_term,
             });
 
-            Ok(loan_id)
+            Ok(caller_acc)
         }
 
         /// Vouch for a pending loan
@@ -202,7 +186,8 @@ mod loan_manager {
                 return Err(Error::LoanNotPending);
             }
 
-            let voucher = Self::env().to_account_id(Self::env().caller());
+            let caller = Self::env().caller();
+            let voucher = Self::h160_to_assethub_account_id(caller);
 
             // Create vouch via vouch contract
             self.vouch.vouch_for_loan(loan_id, loan.borrower, voucher, stars, capital_percent)
@@ -228,13 +213,9 @@ mod loan_manager {
                 return Err(Error::LoanNotPending);
             }
 
-            // Get the vouchers list for this loan
-            let vouchers_list = self.vouch.get_vouchers_for_loan(loan_id);
-
             // Update loan to Active status
             loan.status = LoanStatus::Active;
             loan.start_time = self.env().block_timestamp();
-            loan.vouchers = vouchers_list;
             self.loans.insert(loan_id, &loan);
 
             // Disburse funds via lending pool
@@ -263,7 +244,8 @@ mod loan_manager {
             }
 
             // Verify caller is the borrower
-            let caller_acc = Self::env().to_account_id(Self::env().caller());
+            let caller = Self::env().caller();
+            let caller_acc = Self::h160_to_assethub_account_id(caller);
             if caller_acc != loan.borrower {
                 return Err(Error::Unauthorized);
             }
@@ -282,12 +264,10 @@ mod loan_manager {
             use ink::env::call::{build_call, ExecutionInput, Selector};
             use ink::env::DefaultEnvironment;
             
-            let lending_pool_addr = self.lending_pool_address.get().unwrap();
-            let lending_pool_address_h160 = AccountIdMapper::to_address(lending_pool_addr.as_ref());
             let repayment_u256 = U256::from(repayment_amount);
             
             let result = build_call::<DefaultEnvironment>()
-                .call(lending_pool_address_h160)
+                .call(self.lending_pool_address)
                 .transferred_value(repayment_u256)
                 .exec_input(
                     ExecutionInput::new(Selector::new(ink::selector_bytes!("receive_repayment")))

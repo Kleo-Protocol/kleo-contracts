@@ -9,7 +9,7 @@ mod config {
     /// All information stored for the configurable parameters of the protocol
     #[ink(storage)]
     pub struct Config {
-        admin: Address,
+        admin: AccountId,
         base_interest_rate: u64,
         optimal_utilization: u64,
         slope1: u64,
@@ -81,8 +81,9 @@ mod config {
         #[ink(constructor)]
         pub fn new() -> Self {
             let caller= Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
             Self { 
-                admin: caller,
+                admin: caller_acc,
                 base_interest_rate: Self::DEFAULT_BASE_INTEREST_RATE,
                 optimal_utilization: Self::DEFAULT_OPTIMAL_UTILIZATION,
                 slope1: Self::DEFAULT_SLOPE1,
@@ -112,7 +113,8 @@ mod config {
         /// Ensure that the caller of other functions is the admin
         fn ensure_admin(&self) -> ConfigResult<()> {
             let caller = self.env().caller();
-            if caller != self.admin {
+            let caller_acc = Self::env().to_account_id(caller);
+            if caller_acc != self.admin {
                 return Err(Error::NotAdmin);
             }
             Ok(())

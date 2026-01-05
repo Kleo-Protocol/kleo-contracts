@@ -24,10 +24,10 @@ mod lending_pool {
         total_borrowed: Lazy<Balance>,
         reserved_funds: Lazy<Balance>,
         total_principal_deposits: Lazy<Balance>, // Total principal deposited (excluding interest)
-        user_deposits: Mapping<Address, Balance>,
+        user_deposits: Mapping<AccountId, Balance>,
         last_update: Lazy<Timestamp>,
-        vouch_contract: Lazy<Option<Address>>, // Authorized vouch contract address
-        loan_manager: Lazy<Option<Address>>, // Authorized loan manager contract address
+        vouch_contract: Lazy<Option<AccountId>>, // Authorized vouch contract address
+        loan_manager: Lazy<Option<AccountId>>, // Authorized loan manager contract address
     }
 
     /// Events for lending pool actions
@@ -95,7 +95,7 @@ mod lending_pool {
         /// Set the vouch contract address (can only be set once)
         /// This should be called after the Vouch contract is deployed
         #[ink(message)]
-        pub fn set_vouch_contract(&mut self, vouch_address: Address) -> Result<(), Error> {
+        pub fn set_vouch_contract(&mut self, vouch_address: AccountId) -> Result<(), Error> {
             // Check if vouch contract is already set
             if self.vouch_contract.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -107,7 +107,7 @@ mod lending_pool {
         /// Set the loan manager contract address (can only be set once)
         /// This should be called after the LoanManager contract is deployed
         #[ink(message)]
-        pub fn set_loan_manager(&mut self, loan_manager_address: Address) -> Result<(), Error> {
+        pub fn set_loan_manager(&mut self, loan_manager_address: AccountId) -> Result<(), Error> {
             // Check if loan manager is already set
             if self.loan_manager.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -119,10 +119,11 @@ mod lending_pool {
         /// Internal helper to check if caller is the authorized vouch contract
         fn ensure_vouch_contract(&self) -> Result<(), Error> {
             let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
             let vouch_contract = self.vouch_contract.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller != vouch_contract {
+            if caller_acc != vouch_contract {
                 return Err(Error::Unauthorized);
             }
             Ok(())
@@ -131,10 +132,11 @@ mod lending_pool {
         /// Internal helper to check if caller is the authorized loan manager
         fn ensure_loan_manager(&self) -> Result<(), Error> {
             let caller = Self::env().caller();
+            let caller_acc = Self::env().to_account_id(caller);
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller != loan_manager {
+            if caller_acc != loan_manager {
                 return Err(Error::Unauthorized);
             }
             Ok(())
@@ -158,12 +160,12 @@ mod lending_pool {
             let caller_acc = Self::env().to_account_id(caller);
 
             // Update the user's deposit balance
-            let current_balance = self.user_deposits.get(&caller).unwrap_or(0);
+            let current_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
             let new_balance = current_balance.saturating_add(deposited);
-            self.user_deposits.insert(&caller, &new_balance);
+            self.user_deposits.insert(&caller_acc, &new_balance);
             
             // Verify the insert worked (read back immediately)
-            let verified_balance = self.user_deposits.get(&caller).unwrap_or(0);
+            let verified_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
             
             // Update total liquidity
             let mut total_liquidity = self.total_liquidity.get_or_default();
@@ -204,7 +206,7 @@ mod lending_pool {
 
             self.accrue_interest();
 
-            let user_deposit = self.user_deposits.get(&caller).unwrap_or(0);
+            let user_deposit = self.user_deposits.get(&caller_acc).unwrap_or(0);
             let total_liquidity = self.total_liquidity.get_or_default();
             let total_principal = self.total_principal_deposits.get_or_default();
             
@@ -233,7 +235,7 @@ mod lending_pool {
 
             // Update user's deposit balance (reduce by principal portion)
             let new_user_deposit = user_deposit.saturating_sub(principal_to_reduce);
-            self.user_deposits.insert(&caller, &new_user_deposit);
+            self.user_deposits.insert(&caller_acc, &new_user_deposit);
 
             // Update total liquidity
             let mut total_liquidity = self.total_liquidity.get_or_default();
@@ -245,7 +247,7 @@ mod lending_pool {
             total_principal = total_principal.saturating_sub(principal_to_reduce);
             self.total_principal_deposits.set(&total_principal);
 
-            if self.env().transfer(caller, U256::from(amount)).is_err() {
+            if self.env().transfer(AccountIdMapper::to_address(caller_acc.as_ref()), U256::from(amount)).is_err() {
                 return Err(Error::TransactionFailed);
             }
 
@@ -267,9 +269,15 @@ mod lending_pool {
             let total_borrowed = self.total_borrowed.get_or_default();
 
             // Utilization = borrowed / liquidity, scaled by 1e9 for precision
-            let utilization = (total_borrowed as u128 * 1_000_000_000u128)
-                .checked_div(total_liquidity as u128)
+            // Use checked arithmetic to prevent overflow traps when values are very large
+            let utilization = (total_borrowed as u128)
+                .checked_mul(1_000_000_000u128)
+                .and_then(|v| v.checked_div(total_liquidity as u128))
                 .unwrap_or(0) as u64;
+            
+            // Cap utilization at 1e9 (100%) to prevent issues with calculation overflow
+            // This protects against cases where stored values are incorrectly scaled
+            let utilization = utilization.min(1_000_000_000u64);
 
             let base = self.config.get_base_interest_rate();
             let optimal = self.config.get_optimal_utilization();
@@ -277,8 +285,14 @@ mod lending_pool {
             let slope2 = self.config.get_slope2();
             let max_rate = self.config.get_max_rate();
 
+            // Safety check: if optimal is 0, return base rate to prevent division by zero
+            if optimal == 0 {
+                return base.min(max_rate);
+            }
+
             let rate = if utilization <= optimal {
                 // base + (utilization / optimal) * slope1
+                // Use checked arithmetic to prevent overflow
                 let additional = (utilization as u128)
                     .checked_mul(slope1 as u128)
                     .and_then(|v| v.checked_div(optimal as u128))
@@ -291,6 +305,7 @@ mod lending_pool {
                 let additional = if max_excess == 0 {
                     0
                 } else {
+                    // Use checked arithmetic to prevent overflow
                     (excess as u128)
                         .checked_mul(slope2 as u128)
                         .and_then(|v| v.checked_div(max_excess as u128))
@@ -299,7 +314,7 @@ mod lending_pool {
                 base.saturating_add(slope1).saturating_add(additional)
             };
 
-            // Cap at maximum allowed rate
+            // Cap at maximum allowed rate to prevent overflow
             rate.min(max_rate)
         }
 
@@ -367,7 +382,7 @@ mod lending_pool {
             let caller= Self::env().caller();
             let caller_acc = Self::env().to_account_id(caller);
 
-            let user_deposit = self.user_deposits.get(&caller).unwrap_or(0);
+            let user_deposit = self.user_deposits.get(&caller_acc).unwrap_or(0);
             if user_deposit == 0 {
                 return 0;
             }
@@ -395,7 +410,7 @@ mod lending_pool {
         /// Get user's deposit balance
         #[ink(message)]
         pub fn get_user_deposit(&self, user: AccountId) -> Balance {
-            self.user_deposits.get(&AccountIdMapper::to_address(user.as_ref())).unwrap_or(0)
+            self.user_deposits.get(&user).unwrap_or(0)
         }
 
         #[ink(message)]
@@ -474,7 +489,7 @@ mod lending_pool {
 
             self.accrue_interest();
             
-            let user_balance = self.user_deposits.get(&AccountIdMapper::to_address(user.as_ref())).unwrap_or(0);
+            let user_balance = self.user_deposits.get(&user).unwrap_or(0);
             if amount > user_balance {
                 return Err(Error::UnavailableFunds);
             }
@@ -490,7 +505,7 @@ mod lending_pool {
 
             // Update user's deposit balance
             let new_user_balance = user_balance.saturating_sub(principal_to_reduce);
-            self.user_deposits.insert(&AccountIdMapper::to_address(user.as_ref()), &new_user_balance);
+            self.user_deposits.insert(&user, &new_user_balance);
 
             // Update total liquidity
             let mut total_liquidity = self.total_liquidity.get_or_default();
