@@ -1,27 +1,25 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-use ink::env::{DefaultEnvironment, Environment};
-
-pub type AccountId = <DefaultEnvironment as Environment>::AccountId;
-
 #[ink::contract]
 mod config {
+    // Hardcoded constants
+    const OPTIMAL_UTILIZATION: u64 = 80_000_000_000; // 80% scaled by 1e9
+    const SLOPE1: u64 = 4_000_000_000; // +4% pre-optimal
+    const SLOPE2: u64 = 75_000_000_000; // +75% post-optimal
+    const EXPOSURE_CAP: u64 = 50_000_000; // 5% scaled by 1e9
+    const RESERVE_FACTOR: u8 = 20; // 20%
+    const MAX_RATE: u64 = 100_000_000_000; // Cap at 100%
+    
     /// All information stored for the configurable parameters of the protocol
     #[ink(storage)]
     pub struct Config {
-        admin: AccountId,
+        admin: Option<AccountId>,
         base_interest_rate: u64,
-        optimal_utilization: u64,
-        slope1: u64,
-        slope2: u64,
         boost: u64,
         min_stars_to_vouch: u32,
         cooldown_period: Timestamp,
         loan_term: Timestamp, // Default loan term (separate from cooldown)
-        exposure_cap: u64,
-        reserve_factor: u8,
-        max_rate: u64,
-        // Loan tier configuration
+        //Loan tier configuration
         loan_tier_scaling_factor: Balance,
         loan_tier1_max_scaled_amount: Balance,
         loan_tier2_max_scaled_amount: Balance,
@@ -43,81 +41,63 @@ mod config {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
         NotAdmin,
-        InvalidValue,
-    }
+         InvalidValue,
+        AlreadyAdmin
+     }
 
     // Custom result type for the contract
     pub type ConfigResult<T> = core::result::Result<T, Error>;
 
     impl Config {
-        pub const DEFAULT_BASE_INTEREST_RATE: u64 = 10_000_000_000; // 10% scaled by 1e9
-        pub const DEFAULT_OPTIMAL_UTILIZATION: u64 = 80_000_000_000; // 80% scaled by 1e9
-        pub const DEFAULT_SLOPE1: u64 = 4_000_000_000; // +4% pre-optimal
-        pub const DEFAULT_SLOPE2: u64 = 75_000_000_000; // +75% post-optimal
-        pub const DEFAULT_BOOST: u64 = 2_000_000_000; // +2 boost
-        pub const DEFAULT_MIN_STARS_TO_VOUCH: u32 = 50;
-        pub const DEFAULT_COOLDOWN_PERIOD: Timestamp = 60_000; // 1 minute in ms (for demo - can be changed later)
-        pub const DEFAULT_LOAN_TERM: Timestamp = 2_592_000_000; // 30 days in ms
-        pub const DEFAULT_EXPOSURE_CAP: u64 = 50_000_000; // 5% scaled by 1e9
-        pub const DEFAULT_RESERVE_FACTOR: u8 = 20; // 20%
-        pub const DEFAULT_MAX_RATE: u64 = 100_000_000_000; // Cap at 100%
-        // Loan tier defaults (matching previous hardcoded values)
-        pub const DEFAULT_LOAN_TIER_SCALING_FACTOR: Balance = 1_000_000_000; // 1e9 (TOKEN_DECIMALS)
-        pub const DEFAULT_LOAN_TIER1_MAX_SCALED_AMOUNT: Balance = 1000;
-        pub const DEFAULT_LOAN_TIER2_MAX_SCALED_AMOUNT: Balance = 10000;
-        pub const DEFAULT_LOAN_TIER1_MIN_STARS: u32 = 5;
-        pub const DEFAULT_LOAN_TIER1_MIN_VOUCHES: u32 = 1;
-        pub const DEFAULT_LOAN_TIER2_MIN_STARS: u32 = 20;
-        pub const DEFAULT_LOAN_TIER2_MIN_VOUCHES: u32 = 2;
-        pub const DEFAULT_LOAN_TIER3_MIN_STARS: u32 = 50;
-        pub const DEFAULT_LOAN_TIER3_MIN_VOUCHES: u32 = 3;
-        // Default grace period: 7 days (allows time for repayment after due date)
-        pub const DEFAULT_GRACE_PERIOD: Timestamp = 604_800_000; // 7 days in ms
-        // Star discount defaults
-        pub const DEFAULT_STAR_DISCOUNT_PERCENT_PER_STAR: u64 = 1; // 1% discount per star
-        pub const DEFAULT_MAX_STAR_DISCOUNT_PERCENT: u64 = 50; // 50% maximum discount cap
-
         /// Constructor that initializes configuration with defaults and admin
         #[ink(constructor)]
         pub fn new() -> Self {
-            let caller= Self::env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            Self { 
-                admin: caller_acc,
-                base_interest_rate: Self::DEFAULT_BASE_INTEREST_RATE,
-                optimal_utilization: Self::DEFAULT_OPTIMAL_UTILIZATION,
-                slope1: Self::DEFAULT_SLOPE1,
-                slope2: Self::DEFAULT_SLOPE2,
-                boost: Self::DEFAULT_BOOST,
-                min_stars_to_vouch: Self::DEFAULT_MIN_STARS_TO_VOUCH,
-                cooldown_period: Self::DEFAULT_COOLDOWN_PERIOD,
-                loan_term: Self::DEFAULT_LOAN_TERM,
-                exposure_cap: Self::DEFAULT_EXPOSURE_CAP,
-                reserve_factor: Self::DEFAULT_RESERVE_FACTOR,
-                max_rate: Self::DEFAULT_MAX_RATE,
-                loan_tier_scaling_factor: Self::DEFAULT_LOAN_TIER_SCALING_FACTOR,
-                loan_tier1_max_scaled_amount: Self::DEFAULT_LOAN_TIER1_MAX_SCALED_AMOUNT,
-                loan_tier2_max_scaled_amount: Self::DEFAULT_LOAN_TIER2_MAX_SCALED_AMOUNT,
-                loan_tier1_min_stars: Self::DEFAULT_LOAN_TIER1_MIN_STARS,
-                loan_tier1_min_vouches: Self::DEFAULT_LOAN_TIER1_MIN_VOUCHES,
-                loan_tier2_min_stars: Self::DEFAULT_LOAN_TIER2_MIN_STARS,
-                loan_tier2_min_vouches: Self::DEFAULT_LOAN_TIER2_MIN_VOUCHES,
-                loan_tier3_min_stars: Self::DEFAULT_LOAN_TIER3_MIN_STARS,
-                loan_tier3_min_vouches: Self::DEFAULT_LOAN_TIER3_MIN_VOUCHES,
-                default_grace_period: Self::DEFAULT_GRACE_PERIOD,
-                star_discount_percent_per_star: Self::DEFAULT_STAR_DISCOUNT_PERCENT_PER_STAR,
-                max_star_discount_percent: Self::DEFAULT_MAX_STAR_DISCOUNT_PERCENT,
+            Self {
+                admin: None,
+                base_interest_rate: 10_000_000_000, // 10% scaled by 1e9
+                boost: 2_000_000_000, // +2 boost
+                min_stars_to_vouch: 50,
+                cooldown_period: 60_000, // 1 minute in ms (for demo - can be changed later)
+                loan_term: 2_592_000_000, // 30 days in ms
+                loan_tier_scaling_factor: 1_000_000_000, // 1e9 (TOKEN_DECIMALS)
+                loan_tier1_max_scaled_amount: 1000,
+                loan_tier2_max_scaled_amount: 10000,
+                loan_tier1_min_stars: 5,
+                loan_tier1_min_vouches: 1,
+                loan_tier2_min_stars: 20,
+                loan_tier2_min_vouches: 2,
+                loan_tier3_min_stars: 50,
+                loan_tier3_min_vouches: 3,
+                default_grace_period: 604_800_000, // 7 days in ms
+                star_discount_percent_per_star: 1, // 1% discount per star
+                max_star_discount_percent: 50, // 50% maximum discount cap
             }
         }
 
-        /// Ensure that the caller of other functions is the admin
-        fn ensure_admin(&self) -> ConfigResult<()> {
-            let caller = self.env().caller();
-            let caller_acc = Self::env().to_account_id(caller);
-            if caller_acc != self.admin {
-                return Err(Error::NotAdmin);
+        #[ink(message)]
+        pub fn set_admin(&mut self, admin: AccountId) -> ConfigResult<()> {
+            if self.admin.is_some() {
+                return Err(Error::AlreadyAdmin);
             }
+            self.admin = Some(admin);
             Ok(())
+        }
+
+        #[ink(message)]
+        pub fn get_converted_caller(&self) -> AccountId {
+            let caller = self.env().caller();
+            self.env().to_account_id(caller)
+        }
+
+
+        /// Ensure that the caller of other functions is the admin
+        fn ensure_admin(&mut self) -> ConfigResult<()> {
+            let caller = self.get_converted_caller();
+            match self.admin {
+                Some(admin) if admin == caller => Ok(()),
+                Some(_) => Err(Error::NotAdmin),
+                None => Err(Error::NotAdmin),
+            }
         }
 
         /// Setter functions for configuration parameters
@@ -129,26 +109,38 @@ mod config {
             Ok(())
         }
 
+        // Getter functions for hardcoded constants
+        
         #[ink(message)]
-        pub fn update_optimal_utilization(&mut self, new_optimal: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
-            self.optimal_utilization = new_optimal;
-            Ok(())
+        pub fn get_optimal_utilization(&self) -> u64 {
+            OPTIMAL_UTILIZATION
+        }
+        
+        #[ink(message)]
+        pub fn get_slope1(&self) -> u64 {
+            SLOPE1
+        }
+        
+        #[ink(message)]
+        pub fn get_slope2(&self) -> u64 {
+            SLOPE2
+        }
+        
+        #[ink(message)]
+        pub fn get_exposure_cap(&self) -> u64 {
+            EXPOSURE_CAP
+        }
+        
+        #[ink(message)]
+        pub fn get_reserve_factor(&self) -> u8 {
+            RESERVE_FACTOR
+        }
+        
+        #[ink(message)]
+        pub fn get_max_rate(&self) -> u64 {
+            MAX_RATE
         }
 
-        #[ink(message)]
-        pub fn update_slope1(&mut self, new_slope: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
-            self.slope1 = new_slope;
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn update_slope2(&mut self, new_slope: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
-            self.slope2 = new_slope;
-            Ok(())
-        }
 
         #[ink(message)]
         pub fn update_boost(&mut self, new_boost: u64) -> ConfigResult<()> {
@@ -178,26 +170,6 @@ mod config {
             Ok(())
         }
 
-        #[ink(message)]
-        pub fn update_exposure_cap(&mut self, new_cap: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
-            self.exposure_cap = new_cap;
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn update_reserve_factor(&mut self, new_factor: u8) -> ConfigResult<()> {
-            self.ensure_admin()?;
-            self.reserve_factor = new_factor;
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn update_max_rate(&mut self, new_max: u64) -> ConfigResult<()> {
-            self.ensure_admin()?;
-            self.max_rate = new_max;
-            Ok(())
-        }
 
         #[ink(message)]
         pub fn update_loan_tier_scaling_factor(&mut self, new_factor: Balance) -> ConfigResult<()> {
@@ -276,20 +248,6 @@ mod config {
             self.base_interest_rate
         }
 
-        #[ink(message)]
-        pub fn get_optimal_utilization(&self) -> u64 {
-            self.optimal_utilization
-        }
-
-        #[ink(message)]
-        pub fn get_slope1(&self) -> u64 {
-            self.slope1
-        }
-
-        #[ink(message)]
-        pub fn get_slope2(&self) -> u64 {
-            self.slope2
-        }
 
         #[ink(message)]
         pub fn get_boost(&self) -> u64 {
@@ -311,20 +269,6 @@ mod config {
             self.loan_term
         }
 
-        #[ink(message)]
-        pub fn get_exposure_cap(&self) -> u64 {
-            self.exposure_cap
-        }
-
-        #[ink(message)]
-        pub fn get_reserve_factor(&self) -> u8 {
-            self.reserve_factor
-        }
-
-        #[ink(message)]
-        pub fn get_max_rate(&self) -> u64 {
-            self.max_rate
-        }
 
         /// Getter for loan tier scaling factor
         #[ink(message)]

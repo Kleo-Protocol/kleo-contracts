@@ -10,6 +10,7 @@ config = { path = "../config", default-features = false, features = ["ink-as-dep
 reputation = { path = "../reputation", default-features = false, features = ["ink-as-dependency"] }
 lending_pool = { path = "../lending_pool", default-features = false, features = ["ink-as-dependency"] }
 vouch = { path = "../vouch", default-features = false, features = ["ink-as-dependency"] }
+pallet-revive-uapi = { version = "0.8.0", default-features = false }
 
 [dev-dependencies]
 ink_e2e = { version = "6.0.0-beta.1" }
@@ -32,9 +33,3 @@ e2e-tests = []
 
 [package.metadata.ink-lang]
 abi = "ink"
-
-[lints.rust.unexpected_cfgs]
-level = "warn"
-check-cfg = [
-    'cfg(ink_abi, values("ink", "sol", "all"))'
-]

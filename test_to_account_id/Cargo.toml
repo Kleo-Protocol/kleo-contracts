@@ -1,22 +1,22 @@
 [package]
-name = "config"
+name = "test_to_account_id"
 version = "0.1.0"
 authors = ["Fabian Sanchez <fabiansanchezd@outlook.com>"]
 edition = "2024"
 
 [dependencies]
 ink = { version = "6.0.0-beta.1", default-features = false, features = ["unstable-hostfn"] }
-
 [dev-dependencies]
 ink_e2e = { version = "6.0.0-beta.1" }
 
 [lib]
 path = "lib.rs"
 
+
 [features]
 default = ["std"]
 std = [
-    "ink/std",
+    "ink/std"
 ]
 ink-as-dependency = []
 e2e-tests = []
