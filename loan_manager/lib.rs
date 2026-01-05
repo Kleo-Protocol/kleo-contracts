@@ -172,7 +172,7 @@ mod loan_manager {
                 term: loan_term,
             });
 
-            Ok(caller_acc)
+            Ok(loan_id)
         }
 
         /// Vouch for a pending loan
@@ -187,7 +187,7 @@ mod loan_manager {
             }
 
             let caller = Self::env().caller();
-            let voucher = Self::h160_to_assethub_account_id(caller);
+            let voucher = Self::env().to_account_id(caller);
 
             // Create vouch via vouch contract
             self.vouch.vouch_for_loan(loan_id, loan.borrower, voucher, stars, capital_percent)
@@ -245,7 +245,7 @@ mod loan_manager {
 
             // Verify caller is the borrower
             let caller = Self::env().caller();
-            let caller_acc = Self::h160_to_assethub_account_id(caller);
+            let caller_acc = Self::env().to_account_id(caller);
             if caller_acc != loan.borrower {
                 return Err(Error::Unauthorized);
             }
