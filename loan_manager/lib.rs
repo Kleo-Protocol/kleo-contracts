@@ -10,6 +10,7 @@ mod loan_manager {
     use vouch::VouchRef;
     use ink::storage::Mapping;
     use ink::U256;
+    use ink::prelude::vec::Vec;
 
     /// Struct for loan information
     #[ink::storage_item(packed)]
@@ -22,6 +23,7 @@ mod loan_manager {
         amount: Balance,  // u128
         borrower: AccountId,  // [u8; 32]
         status: LoanStatus,
+        total_repayment_amount: Balance, // Fixed repayment amount calculated at loan creation
     }
 
     /// All information that is needed to store in the contract
@@ -86,6 +88,7 @@ mod loan_manager {
         Unauthorized,
         RepaymentFailed,
         InvalidRepaymentAmount,
+        Overflow,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -138,6 +141,17 @@ mod loan_manager {
             let base_rate = self.lending_pool.get_current_rate();
             let adjusted_rate = self.adjust_rate_by_stars(base_rate, stars);
 
+            // Calculate total repayment amount (principal + interest) at loan creation
+            // Repayment = amount * (1 + interest_rate_percentage)
+            // The interest_rate is stored as percentage * 1e9 (e.g., 10% = 10_000_000_000)
+            // To get the percentage: adjusted_rate / 100_000_000_000 (1e11)
+            // So: repayment = amount * (1 + adjusted_rate / 100_000_000_000)
+            // Example: 100 tokens at 10% = 100 * (1 + 10_000_000_000 / 100_000_000_000) = 100 * 1.10 = 110
+            let total_repayment = (amount as u128)
+                .checked_mul(100_000_000_000u128 + adjusted_rate as u128)
+                .and_then(|v| v.checked_div(100_000_000_000u128))
+                .unwrap_or(amount) as Balance;
+
             // Create pending loan record (no vouches yet, no disbursement)
             let loan_id = self.next_loan_id;
             let loan = Loan {
@@ -148,6 +162,7 @@ mod loan_manager {
                 status: LoanStatus::Pending,
                 amount: amount,
                 borrower: caller,
+                total_repayment_amount: total_repayment,
             };
 
             // Store the loan
@@ -238,9 +253,14 @@ mod loan_manager {
             // Calculate repayment amount (principal + interest)
             let repayment_amount = self.calculate_repayment_amount(&loan);
 
-            // Verify the transferred amount matches the required repayment
-            let transferred = self.env().transferred_value();
-            if transferred != U256::from(repayment_amount) {
+            let repaid_u256 = self.env().transferred_value();
+            if repaid_u256 > U256::from(u128::MAX) {
+                return Err(Error::Overflow);
+            }
+            let repaid: Balance = repaid_u256.as_u128();
+
+            // Verify the repaid amount matches the required repayment
+            if repaid != repayment_amount {
                 return Err(Error::InvalidRepaymentAmount);
             }
 
@@ -388,28 +408,51 @@ mod loan_manager {
         }
 
         /// Internal: Calculate repayment amount (principal + interest)
-        /// Interest is calculated based on the loan's interest_rate, principal amount, and elapsed time
+        /// Returns the fixed repayment amount calculated at loan creation
         fn calculate_repayment_amount(&self, loan: &Loan) -> Balance {
-            let principal = loan.amount;
-            
-            // Calculate elapsed time in milliseconds
-            let current_time = self.env().block_timestamp();
-            let elapsed = current_time.saturating_sub(loan.start_time);
-            
-            // Yearly denominator for scaled rates (assuming rates are in "per year" basis)
-            // 365.25 days * 24 hours * 60 min * 60 sec * 1000 ms ≈ 31_557_600_000 ms
-            const YEAR_MS: u128 = 31_557_600_000u128;
-            
-            // Calculate interest: principal * rate * elapsed_ms / YEAR_MS
-            // The interest_rate is already scaled by 1e9 (e.g., 5% = 5_000_000_000, 10% = 10_000_000_000)
-            let interest = (principal as u128)
-                .checked_mul(loan.interest_rate as u128)
-                .and_then(|v| v.checked_mul(elapsed as u128))
-                .and_then(|v| v.checked_div(YEAR_MS))
-                .unwrap_or(0) as Balance;
-            
-            // Total repayment = principal + interest
-            principal.saturating_add(interest)
+            loan.total_repayment_amount
+        }
+
+        /// Get the repayment amount for a loan
+        /// Returns the fixed repayment amount (principal + interest) calculated at loan creation
+        #[ink(message)]
+        pub fn get_repayment_amount(&self, loan_id: u64) -> Result<Balance> {
+            let loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
+            Ok(loan.total_repayment_amount)
+        }
+
+        /// Get all pending loans
+        /// Returns a vector of loan IDs that are currently pending
+        #[ink(message)]
+        pub fn get_all_pending_loans(&self) -> Vec<u64> {
+            let mut pending_loans = Vec::new();
+            // Iterate through all possible loan IDs (from 1 to next_loan_id - 1)
+            let max_id = self.next_loan_id;
+            for loan_id in 1..max_id {
+                if let Some(loan) = self.loans.get(loan_id) {
+                    if loan.status == LoanStatus::Pending {
+                        pending_loans.push(loan_id);
+                    }
+                }
+            }
+            pending_loans
+        }
+
+        /// Get all active loans
+        /// Returns a vector of loan IDs that are currently active
+        #[ink(message)]
+        pub fn get_all_active_loans(&self) -> Vec<u64> {
+            let mut active_loans = Vec::new();
+            // Iterate through all possible loan IDs (from 1 to next_loan_id - 1)
+            let max_id = self.next_loan_id;
+            for loan_id in 1..max_id {
+                if let Some(loan) = self.loans.get(loan_id) {
+                    if loan.status == LoanStatus::Active {
+                        active_loans.push(loan_id);
+                    }
+                }
+            }
+            active_loans
         }
     }
 }
