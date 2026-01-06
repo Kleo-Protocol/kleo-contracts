@@ -51,9 +51,9 @@ mod config {
     impl Config {
         /// Constructor that initializes configuration with defaults and admin
         #[ink(constructor)]
-        pub fn new() -> Self {
+        pub fn new(admin_account_id: AccountId) -> Self {
             Self {
-                admin: Address::from(&[0; 20]),
+                admin: admin_account_id,
                 base_interest_rate: 10_000_000_000, // 10% scaled by 1e9
                 boost: 2_000_000_000, // +2 boost
                 min_stars_to_vouch: 50,
@@ -75,13 +75,7 @@ mod config {
         }
 
         #[ink(message)]
-        pub fn set_admin(&mut self, admin_account_id: AccountId) -> ConfigResult<()> {
-            self.admin = admin_account_id;
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn get_admin(&self) -> Address {
+        pub fn get_admin(&self) -> AccountId {
             self.admin
         }
 

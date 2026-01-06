@@ -26,8 +26,8 @@ mod lending_pool {
         total_principal_deposits: Lazy<Balance>, // Total principal deposited (excluding interest)
         user_deposits: Mapping<AccountId, Balance>,
         last_update: Lazy<Timestamp>,
-        vouch_contract: Lazy<Option<AccountId>>, // Authorized vouch contract address
-        loan_manager: Lazy<Option<AccountId>>, // Authorized loan manager contract address
+        vouch_contract: Lazy<Option<Address>>, // Authorized vouch contract address
+        loan_manager: Lazy<Option<Address>>, // Authorized loan manager contract address
     }
 
     /// Events for lending pool actions
@@ -95,7 +95,7 @@ mod lending_pool {
         /// Set the vouch contract address (can only be set once)
         /// This should be called after the Vouch contract is deployed
         #[ink(message)]
-        pub fn set_vouch_contract(&mut self, vouch_address: AccountId) -> Result<(), Error> {
+        pub fn set_vouch_contract(&mut self, vouch_address: Address) -> Result<(), Error> {
             // Check if vouch contract is already set
             if self.vouch_contract.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -107,7 +107,7 @@ mod lending_pool {
         /// Set the loan manager contract address (can only be set once)
         /// This should be called after the LoanManager contract is deployed
         #[ink(message)]
-        pub fn set_loan_manager(&mut self, loan_manager_address: AccountId) -> Result<(), Error> {
+        pub fn set_loan_manager(&mut self, loan_manager_address: Address) -> Result<(), Error> {
             // Check if loan manager is already set
             if self.loan_manager.get().is_some() {
                 return Err(Error::Unauthorized);
@@ -117,22 +117,24 @@ mod lending_pool {
         }
 
         /// Internal helper to check if caller is the authorized vouch contract
-        fn ensure_vouch_contract(&self, caller_account_id: AccountId) -> Result<(), Error> {
+        fn ensure_vouch_contract(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
             let vouch_contract = self.vouch_contract.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_account_id != vouch_contract {
+            if caller != vouch_contract {
                 return Err(Error::Unauthorized);
             }
             Ok(())
         }
 
         /// Internal helper to check if caller is the authorized loan manager
-        fn ensure_loan_manager(&self, caller_account_id: AccountId) -> Result<(), Error> {
+        fn ensure_loan_manager(&self) -> Result<(), Error> {
+            let caller = Self::env().caller();
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if caller_account_id != loan_manager {
+            if caller != loan_manager {
                 return Err(Error::Unauthorized);
             }
             Ok(())
@@ -414,9 +416,9 @@ mod lending_pool {
         /// Disburse part of liquidity (add a borrow basically)
         /// Only callable by the authorized loan manager contract
         #[ink(message)]
-        pub fn disburse(&mut self, amount: Balance, to: AccountId, caller_account_id: AccountId) -> Result<(), Error> {
+        pub fn disburse(&mut self, amount: Balance, to: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
-            self.ensure_loan_manager(caller_account_id)?;
+            self.ensure_loan_manager()?;
 
             self.accrue_interest();
 
@@ -476,9 +478,9 @@ mod lending_pool {
         /// Slash part of the position of a voucher
         /// Only callable by the authorized vouch contract
         #[ink(message)]
-        pub fn slash_stake(&mut self, user: AccountId, amount: Balance, caller_account_id: AccountId) -> Result<(), Error> {
+        pub fn slash_stake(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
             // Verify caller is the authorized vouch contract
-            self.ensure_vouch_contract(caller_account_id)?;
+            self.ensure_vouch_contract()?;
 
             self.accrue_interest();
             

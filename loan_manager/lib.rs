@@ -168,7 +168,7 @@ mod loan_manager {
         // Vouch for a pending loan
         // Validates loan is pending, then creates vouch and checks if disbursement is ready
         #[ink(message)]
-        pub fn vouch_for_loan(&mut self, loan_id: u64, stars: u32, capital_percent: u8, voucher_account_id: AccountId, loan_manager_account_id: AccountId, vouch_contract_account_id: AccountId) -> Result<()> {
+        pub fn vouch_for_loan(&mut self, loan_id: u64, stars: u32, capital_percent: u8, voucher_account_id: AccountId, loan_manager_address: Address) -> Result<()> {
             let loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
 
             // Only pending loans can receive vouches
@@ -177,7 +177,7 @@ mod loan_manager {
             }
 
             // Create vouch via vouch contract
-            self.vouch.vouch_for_loan(loan_id, loan.borrower, voucher_account_id, stars, capital_percent, loan_manager_account_id, vouch_contract_account_id)
+            self.vouch.vouch_for_loan(loan_id, loan.borrower, voucher_account_id, stars, capital_percent, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Check if we now have enough vouches to disburse
@@ -186,14 +186,14 @@ mod loan_manager {
 
             if current_vouches >= min_vouches {
                 // Auto-disburse when threshold is met
-                self.disburse_loan(loan_id, loan_manager_account_id)?;
+                self.disburse_loan(loan_id)?;
             }
 
             Ok(())
         }
 
         // Internal function to disburse a loan that has enough vouches
-        fn disburse_loan(&mut self, loan_id: u64, loan_manager_account_id: AccountId) -> Result<()> {
+        fn disburse_loan(&mut self, loan_id: u64) -> Result<()> {
             let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
 
             if loan.status != LoanStatus::Pending {
@@ -206,7 +206,7 @@ mod loan_manager {
             self.loans.insert(loan_id, &loan);
 
             // Disburse funds via lending pool
-            self.lending_pool.disburse(loan.amount, loan.borrower, loan_manager_account_id)
+            self.lending_pool.disburse(loan.amount, loan.borrower)
                 .map_err(|_| Error::DisbursementFailed)?;
 
             Ok(())
@@ -222,7 +222,7 @@ mod loan_manager {
         // Calculates the repayment amount (principal + interest) and processes the repayment
         // Marks the loan as repaid and resolves vouches as successful
         #[ink(message, payable)]
-        pub fn repay_loan(&mut self, loan_id: u64, borrower_account_id: AccountId, loan_manager_account_id: AccountId, vouch_contract_account_id: AccountId) -> Result<()> {
+        pub fn repay_loan(&mut self, loan_id: u64, borrower_account_id: AccountId, loan_manager_address: Address) -> Result<()> {
             let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
 
             // Only active loans can be repaid
@@ -271,7 +271,7 @@ mod loan_manager {
             self.loans.insert(loan_id, &loan);
 
             // Resolve all vouch relationships for this loan as successful
-            self.vouch.resolve_loan(loan_id, loan.borrower, true, loan_manager_account_id, vouch_contract_account_id)
+            self.vouch.resolve_loan(loan_id, loan.borrower, true, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanRepaid event
@@ -296,7 +296,7 @@ mod loan_manager {
         /// 
         /// Slashes borrower's stars and resolves vouches as failed
         #[ink(message)]
-        pub fn check_default(&mut self, loan_id: u64, loan_manager_account_id: AccountId, vouch_contract_account_id: AccountId) -> Result<()> {
+        pub fn check_default(&mut self, loan_id: u64, loan_manager_address: Address, vouch_contract_address: Address) -> Result<()> {
             let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
 
             // Only active loans can be defaulted (prevents double-processing)
@@ -323,10 +323,10 @@ mod loan_manager {
             // Slash borrower's stars via reputation contract
             // Slash amount proportional to loan amount, using consistent token decimals
             let stars_to_slash = (loan.amount / Self::TOKEN_DECIMALS).max(1) as u32;
-            let _ = self.reputation.slash_stars(loan.borrower, stars_to_slash, loan_manager_account_id);
+            let _ = self.reputation.slash_stars(loan.borrower, stars_to_slash);
 
             // Resolve all vouch relationships for this loan as failed
-            self.vouch.resolve_loan(loan_id, loan.borrower, false, loan_manager_account_id, vouch_contract_account_id)
+            self.vouch.resolve_loan(loan_id, loan.borrower, false, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanDefaulted event
