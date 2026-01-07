@@ -1,4 +1,4 @@
-# Kleo Protocol
+# Kleo Protocol [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Kleo-Protocol/kleo-contracts)
 
 A decentralized lending protocol built with Ink! v6 smart contracts for the Polkadot ecosystem. Kleo implements a reputation-based, community-vouched lending system where borrowers build creditworthiness through on-chain reputation and social guarantees.
 
