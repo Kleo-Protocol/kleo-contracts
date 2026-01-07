@@ -178,15 +178,16 @@ This encourages deposits when utilization is high and borrowing when utilization
 - `new(config_address)` - Initialize
 - `set_vouch_contract(vouch_address)` - Set authorized vouch contract
 - `set_loan_manager(loan_manager_address)` - Set authorized loan manager
-- `deposit(account_id)` - Add liquidity to the pool (payable)
-- `withdraw(amount, account_id)` - Remove liquidity from the pool
-- `disburse(amount, to)` - Transfer funds for approved loans (only loan manager)
-- `receive_repayment(amount)` - Process loan repayments (payable)
-- `slash_stake(user, amount)` - Penalize voucher deposits on default (only vouch contract)
+- `deposit(account_id)` - Add liquidity to the pool (payable, accepts 18 decimals)
+- `withdraw(amount, account_id)` - Remove liquidity from the pool (amount in 10 decimals)
+- `disburse(amount, to)` - Transfer funds for approved loans (only loan manager, amount in 10 decimals)
+- `receive_repayment(amount)` - Process loan repayments (payable, amount in 18 decimals)
+- `slash_stake(user, amount)` - Penalize voucher deposits on default (only vouch contract, amount in 10 decimals)
 - `get_current_rate()` - Calculate current interest rate
-- `get_user_deposit(user)` - Query user deposit balance
-- `get_user_yield(account_id)` - Calculate accrued yield for a user
-- `get_total_liquidity()` - Query total pool liquidity
+- `get_user_deposit(user)` - Query user deposit balance (returns 10 decimals)
+- `get_user_yield(account_id)` - Calculate accrued yield for a user (read-only, returns 18 decimals)
+- `accrue_interest_and_get_user_yield(account_id)` - Accrue interest then calculate yield (returns 18 decimals)
+- `get_total_liquidity()` - Query total pool liquidity (returns 18 decimals)
 
 **Events**:
 - `Deposit` - Funds added to pool
@@ -388,10 +389,24 @@ Quick test flow:
 - Functions that check authorization use `caller()` internally
 - Pay attention to function signatures when calling
 
+### Decimal Precision
+- **Storage format (10 decimals)**: `user_deposits` are stored in 10 decimals
+- **Chain format (18 decimals)**: All transfers and `total_liquidity` use 18 decimals
+- **Function parameters**:
+  - `deposit()`: Accepts value in 18 decimals (from `transferred_value()`)
+  - `withdraw(amount, account_id)`: `amount` parameter in 10 decimals
+  - `disburse(amount, to)`: `amount` parameter in 10 decimals
+  - `receive_repayment(amount)`: `amount` parameter in 18 decimals (matches `transferred_value()`)
+  - `get_repayment_amount(loan_id)`: Returns 18 decimals (chain format)
+  - `get_user_yield(account_id)`: Returns 18 decimals (chain format)
+  - `get_total_liquidity()`: Returns 18 decimals (chain format)
+
 ### Query Functions
 - `get_all_pending_loans()` - Get all pending loan IDs
 - `get_all_active_loans()` - Get all active loan IDs
-- `get_repayment_amount(loan_id)` - Get fixed repayment amount
+- `get_repayment_amount(loan_id)` - Get fixed repayment amount (returns 18 decimals)
+- `get_user_yield(account_id)` - Get user yield without accruing interest (read-only, returns 18 decimals)
+- `accrue_interest_and_get_user_yield(account_id)` - Get user yield with interest accrual (returns 18 decimals)
 
 ---
 

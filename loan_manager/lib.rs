@@ -94,6 +94,16 @@ mod loan_manager {
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl LoanManager {
+        // Decimal conversion constant: 10^8 to convert between 10 decimals and 18 decimals
+        const DECIMAL_CONVERSION: u128 = 100_000_000; // 10^8
+
+        /// Convert amount from 10 decimals (storage format) to 18 decimals (chain format)
+        fn convert_10_to_18_decimals(&self, amount_10: Balance) -> Balance {
+            (amount_10 as u128)
+                .checked_mul(Self::DECIMAL_CONVERSION)
+                .unwrap_or(0) as Balance
+        }
+
         // Token decimals constant - matches the scaling factor used throughout the contract (1e9)
         // This should match the native currency's decimal places
         const TOKEN_DECIMALS: Balance = 1_000_000_000; // 1e9
@@ -259,24 +269,34 @@ mod loan_manager {
             }
             let repaid: Balance = repaid_u256.as_u128();
 
-            // Verify the repaid amount matches the required repayment
-            if repaid != repayment_amount {
+            // Convert repayment_amount from 10 decimals to 18 decimals for comparison
+            // The chain uses 18 decimals, but our contract uses 10 decimals
+            const DECIMAL_CONVERSION: u128 = 100_000_000; // 10^8 (to convert from 10 to 18 decimals)
+            let repayment_amount_18_decimals = (repayment_amount as u128)
+                .checked_mul(DECIMAL_CONVERSION)
+                .unwrap_or(0) as Balance;
+
+            // Verify the repaid amount matches the required repayment (both in 18 decimals)
+            if repaid != repayment_amount_18_decimals {
                 return Err(Error::InvalidRepaymentAmount);
             }
 
             // Forward payment to lending pool's receive_repayment
             // Use build_call to forward the payment with the repayment amount
+            // Note: repaid is in 18 decimals, but we need to pass the amount parameter in the same decimals
+            // The lending pool expects the amount parameter to match the transferred value (18 decimals)
             use ink::env::call::{build_call, ExecutionInput, Selector};
             use ink::env::DefaultEnvironment;
             
-            let repayment_u256 = U256::from(repayment_amount);
+            // Use the repaid amount (18 decimals) for forwarding, and pass it as the amount parameter
+            let repayment_u256 = U256::from(repaid);
             
             let result = build_call::<DefaultEnvironment>()
                 .call(self.lending_pool_address)
                 .transferred_value(repayment_u256)
                 .exec_input(
                     ExecutionInput::new(Selector::new(ink::selector_bytes!("receive_repayment")))
-                        .push_arg(&repayment_amount)
+                        .push_arg(&repaid) // Pass repaid (18 decimals) to match transferred value
                 )
                 .returns::<Result<()>>()
                 .try_invoke();
@@ -415,10 +435,12 @@ mod loan_manager {
 
         /// Get the repayment amount for a loan
         /// Returns the fixed repayment amount (principal + interest) calculated at loan creation
+        /// Returns value in 18 decimals (chain format) for consistency with total liquidity
         #[ink(message)]
         pub fn get_repayment_amount(&self, loan_id: u64) -> Result<Balance> {
             let loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
-            Ok(loan.total_repayment_amount)
+            // Convert from 10 decimals (storage) to 18 decimals (chain format)
+            Ok(self.convert_10_to_18_decimals(loan.total_repayment_amount))
         }
 
         /// Get all pending loans

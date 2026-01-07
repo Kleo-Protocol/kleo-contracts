@@ -138,23 +138,24 @@ As the admin (contract deployer), set stars for testing:
 
 ### Step 2: Add Liquidity to Pool
 
-1. **Alice deposits 1000 tokens**:
+1. **Alice deposits 100 tokens**:
    - Contract: `LENDING_POOL_ADDRESS`
    - Message: `deposit`
    - Args: `Alice's AccountId`
-   - Value: `1000000000000` (100 tokens with 10 decimals)
+   - Value: `100000000000000000000` (100 tokens with 18 decimals - chain format)
+   - Note: The contract converts to 10 decimals for storage
 
-2. **Bob deposits 1000 tokens**:
+2. **Bob deposits 100 tokens**:
    - Contract: `LENDING_POOL_ADDRESS`
    - Message: `deposit`
    - Args: `Bob's AccountId`
-   - Value: `1000000000000` (100 tokens with 10 decimals)
+   - Value: `100000000000000000000` (100 tokens with 18 decimals - chain format)
 
 3. **Verify deposits**:
    - Contract: `LENDING_POOL_ADDRESS`
    - Message: `get_user_deposit`
-   - Args: `Alice's AccountId` → Should return `1000000000000`
-   - Message: `get_total_liquidity` → Should return `2000000000000`
+   - Args: `Alice's AccountId` → Should return `10000000000` (100 tokens with 10 decimals - storage format)
+   - Message: `get_total_liquidity` → Should return `200000000000000000000` (200 tokens with 18 decimals - chain format)
 
 ### Step 3: Request a Loan
 
@@ -164,7 +165,7 @@ As the admin (contract deployer), set stars for testing:
    - Contract: `LOAN_MANAGER_ADDRESS`
    - Message: `request_loan`
    - Args: 
-     - `amount`: `500000000000` (500 tokens with 9 decimals)
+     - `amount`: `50000000000` (500 tokens with 10 decimals - storage format)
      - `loan_term`: `2592000000` (30 days in milliseconds)
      - `account_id`: `Charlie's AccountId`
    - Note the returned `loan_id` (should be `1`)
@@ -179,8 +180,9 @@ As the admin (contract deployer), set stars for testing:
    - Contract: `LOAN_MANAGER_ADDRESS`
    - Message: `get_repayment_amount`
    - Args: `1`
-   - Returns the fixed repayment amount (principal + interest calculated at creation)
+   - Returns the fixed repayment amount in 18 decimals (principal + interest calculated at creation)
    - Example: If rate is 10%, 500 tokens → 550 tokens repayment
+   - The returned value will be in 18 decimals (e.g., `550000000000000000000` for 550 tokens)
 
 ### Step 4: Vouch for the Loan
 
@@ -226,7 +228,8 @@ As the admin (contract deployer), set stars for testing:
      - `loan_id`: `1`
      - `borrower_account_id`: `Charlie's AccountId`
      - `loan_manager_address`: `LOAN_MANAGER_ADDRESS` (as Address)
-   - Value: `repayment_amount` (the amount returned from `get_repayment_amount`)
+   - Value: `repayment_amount` (the amount returned from `get_repayment_amount` in 18 decimals)
+   - **Important**: The value must be in 18 decimals (chain format), matching what `get_repayment_amount` returns
 
 3. **Verify repayment**:
    - Contract: `LOAN_MANAGER_ADDRESS`
@@ -252,6 +255,19 @@ As the admin (contract deployer), set stars for testing:
 - Message: `get_all_active_loans`
 - Returns: `Vec<u64>` of loan IDs with Active status
 
+**Get user yield** (read-only, doesn't accrue interest):
+- Contract: `LENDING_POOL_ADDRESS`
+- Message: `get_user_yield`
+- Args: `account_id`
+- Returns: Yield in 18 decimals (chain format)
+
+**Get user yield with interest accrual**:
+- Contract: `LENDING_POOL_ADDRESS`
+- Message: `accrue_interest_and_get_user_yield`
+- Args: `account_id`
+- Returns: Yield in 18 decimals (chain format)
+- Note: This function mutates state to accrue interest before calculating yield
+
 ## Important Notes
 
 ### AccountId vs Address
@@ -263,6 +279,25 @@ The contracts use both `AccountId` and `Address` types:
 **When calling functions**:
 - Functions that require `account_id` parameter: Pass the AccountId of the user
 - Functions that require `*_address` parameter: Pass the Address (H160) of the contract
+
+### Decimal Precision
+
+The contracts use two decimal formats:
+- **10 decimals (storage format)**: Used for `user_deposits` storage
+- **18 decimals (chain format)**: Used for all transfers and `total_liquidity`
+
+**Important conversions**:
+- `deposit()`: Send value in 18 decimals (e.g., 100 tokens = `100000000000000000000`)
+- `withdraw(amount, account_id)`: Pass `amount` in 10 decimals (e.g., 100 tokens = `10000000000`)
+- `get_user_deposit(user)`: Returns value in 10 decimals
+- `get_total_liquidity()`: Returns value in 18 decimals
+- `get_repayment_amount(loan_id)`: Returns value in 18 decimals
+- `repay_loan()`: Send value in 18 decimals (use the value from `get_repayment_amount`)
+
+**Example**:
+- To deposit 100 tokens: Send `100000000000000000000` (18 decimals)
+- To withdraw 5 tokens: Call `withdraw(5000000000, account_id)` (5 * 10^10)
+- To repay 550 tokens: Send `550000000000000000000` (18 decimals)
 
 ### Interest Rate Calculation
 
@@ -303,7 +338,9 @@ The contracts use both `AccountId` and `Address` types:
 
 6. **"InvalidRepaymentAmount"**: 
    - The transferred value doesn't match the required repayment amount
-   - Use `get_repayment_amount(loan_id)` to get the exact amount
+   - Use `get_repayment_amount(loan_id)` to get the exact amount in 18 decimals
+   - Make sure you're sending the value in 18 decimals (chain format), not 10 decimals
+   - The value from `get_repayment_amount` is already in 18 decimals - use it directly
 
 7. **"Overflow"**: 
    - Transferred value exceeds u128::MAX

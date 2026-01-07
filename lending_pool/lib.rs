@@ -48,13 +48,6 @@ mod lending_pool {
         amount: Balance,
     }
 
-    #[ink(event)]
-    pub struct DepositDebug {
-        depositor: AccountId,
-        amount: Balance,
-        current_balance: Balance,
-        new_balance: Balance,
-    }
 
     // Custom error types for the contract
     #[derive(Debug, PartialEq, Eq)]
@@ -70,6 +63,23 @@ mod lending_pool {
     }
 
     impl LendingPool {
+        // Decimal conversion constant: 10^8 to convert between 10 decimals and 18 decimals
+        const DECIMAL_CONVERSION: u128 = 100_000_000; // 10^8
+
+        /// Convert amount from 18 decimals (chain format) to 10 decimals (storage format)
+        fn convert_18_to_10_decimals(&self, amount_18: Balance) -> Balance {
+            (amount_18 as u128)
+                .checked_div(Self::DECIMAL_CONVERSION)
+                .unwrap_or(0) as Balance
+        }
+
+        /// Convert amount from 10 decimals (storage format) to 18 decimals (chain format)
+        fn convert_10_to_18_decimals(&self, amount_10: Balance) -> Balance {
+            (amount_10 as u128)
+                .checked_mul(Self::DECIMAL_CONVERSION)
+                .unwrap_or(0) as Balance
+        }
+
         #[ink(constructor)]
         pub fn new(config_address: Address) -> Self {
             let config =
@@ -141,7 +151,6 @@ mod lending_pool {
         }
 
         /// Deposits to the lending pool
-        /// Returns the new balance after deposit for debugging
         #[ink(message, payable)]
         pub fn deposit(&mut self, account_id: AccountId) -> Result<Balance, Error> {
             let deposited_u256 = self.env().transferred_value();
@@ -152,47 +161,42 @@ mod lending_pool {
             if deposited_u256 > U256::from(u128::MAX) {
                 return Err(Error::Overflow);
             }
-            let deposited: Balance = deposited_u256.as_u128();
+            let deposited_18: Balance = deposited_u256.as_u128(); // 18 decimals from chain
 
             let caller_acc = account_id;
 
-            // Update the user's deposit balance
+            // Convert to 10 decimals for user_deposits storage
+            let deposited_10 = self.convert_18_to_10_decimals(deposited_18);
+
+            // Update the user's deposit balance (stored in 10 decimals)
             let current_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
-            let new_balance = current_balance.saturating_add(deposited);
+            let new_balance = current_balance.saturating_add(deposited_10);
             self.user_deposits.insert(&caller_acc, &new_balance);
             
             // Verify the insert worked (read back immediately)
             let verified_balance = self.user_deposits.get(&caller_acc).unwrap_or(0);
             
-            // Update total liquidity
+            // Update total liquidity (stored in 18 decimals)
             let mut total_liquidity = self.total_liquidity.get_or_default();
-            total_liquidity = total_liquidity.saturating_add(deposited);
+            total_liquidity = total_liquidity.saturating_add(deposited_18);
             self.total_liquidity.set(&total_liquidity);
             
-            // Update total principal deposits
+            // Update total principal deposits (stored in 18 decimals)
             let mut total_principal = self.total_principal_deposits.get_or_default();
-            total_principal = total_principal.saturating_add(deposited);
+            total_principal = total_principal.saturating_add(deposited_18);
             self.total_principal_deposits.set(&total_principal);
 
-            // Emit deposit event
+            // Emit deposit event (use 18 decimals for consistency)
             self.env().emit_event(Deposit {
                 depositor: caller_acc,
-                amount: deposited,
+                amount: deposited_18,
             });
 
-            // Emit debug event with balance information
-            self.env().emit_event(DepositDebug {
-                depositor: caller_acc,
-                amount: deposited,
-                current_balance,
-                new_balance: verified_balance,
-            });
-
-            // Return the verified balance for easy debugging
             Ok(verified_balance)
         }
 
         /// Withdraw funds from the lending pool
+        /// amount: in 10 decimals (storage format)
         #[ink(message)]
         pub fn withdraw(&mut self, amount: Balance, account_id: AccountId) -> Result<(), Error> {
             let caller_acc = account_id;
@@ -202,54 +206,77 @@ mod lending_pool {
 
             self.accrue_interest();
 
+            // Convert amount from 10 decimals to 18 decimals for calculations
+            let amount_18 = self.convert_10_to_18_decimals(amount);
+
             let user_deposit = self.user_deposits.get(&caller_acc).unwrap_or(0);
             let total_liquidity = self.total_liquidity.get_or_default();
             let total_principal = self.total_principal_deposits.get_or_default();
             
+            // Convert user_deposit from 10 decimals to 18 decimals for comparison
+            let user_deposit_18 = self.convert_10_to_18_decimals(user_deposit);
+            
             // Calculate user's share of the pool (principal + interest)
             // User can withdraw up to their share: (user_deposit / total_principal) * total_liquidity
+            // If total_liquidity >= total_principal, user_share should be >= user_deposit_18
+            // If total_liquidity < total_principal (loans disbursed), user_share will be < user_deposit_18
             let user_share = if total_principal > 0 && total_liquidity > 0 {
-                (user_deposit as u128 * total_liquidity as u128 / total_principal as u128) as Balance
+                // Calculate user's share with overflow protection
+                // If calculation overflows, fall back to user_deposit_18 (at least their principal)
+                (user_deposit_18 as u128)
+                    .checked_mul(total_liquidity as u128)
+                    .and_then(|v| v.checked_div(total_principal as u128))
+                    .unwrap_or(user_deposit_18) as Balance
             } else {
-                user_deposit // Fallback if no principal or liquidity
+                user_deposit_18 // Fallback if no principal or liquidity
             };
             
-            if amount > user_share {
+            // Cap user_share at total_liquidity (can't withdraw more than what's in the pool)
+            let user_share = user_share.min(total_liquidity);
+            
+            if amount_18 > user_share {
                 return Err(Error::UnavailableFunds);
             }
             
             // Calculate the user's share of the pool (principal + interest)
             // User's share = (user_deposit / total_principal_deposits) * total_liquidity
             // When withdrawing, we need to reduce both user_deposit and total_principal proportionally
-            let principal_to_reduce = if total_principal > 0 && total_liquidity > 0 {
+            let principal_to_reduce_18 = if total_principal > 0 && total_liquidity > 0 {
                 // The withdrawal amount represents a fraction of total_liquidity
                 // Reduce principal by the same fraction
-                (amount as u128 * total_principal as u128 / total_liquidity as u128) as Balance
+                (amount_18 as u128)
+                    .checked_mul(total_principal as u128)
+                    .and_then(|v| v.checked_div(total_liquidity as u128))
+                    .unwrap_or(0) as Balance
             } else {
-                amount // Fallback if no principal or liquidity
+                amount_18 // Fallback if no principal or liquidity
             };
 
-            // Update user's deposit balance (reduce by principal portion)
-            let new_user_deposit = user_deposit.saturating_sub(principal_to_reduce);
+            // Convert principal_to_reduce back to 10 decimals for user_deposits storage
+            let principal_to_reduce_10 = self.convert_18_to_10_decimals(principal_to_reduce_18);
+
+            // Update user's deposit balance (reduce by principal portion, stored in 10 decimals)
+            let new_user_deposit = user_deposit.saturating_sub(principal_to_reduce_10);
             self.user_deposits.insert(&caller_acc, &new_user_deposit);
 
-            // Update total liquidity
+            // Update total liquidity (stored in 18 decimals)
             let mut total_liquidity = self.total_liquidity.get_or_default();
-            total_liquidity = total_liquidity.saturating_sub(amount);
+            total_liquidity = total_liquidity.saturating_sub(amount_18);
             self.total_liquidity.set(&total_liquidity);
             
-            // Update total principal deposits
+            // Update total principal deposits (stored in 18 decimals)
             let mut total_principal = self.total_principal_deposits.get_or_default();
-            total_principal = total_principal.saturating_sub(principal_to_reduce);
+            total_principal = total_principal.saturating_sub(principal_to_reduce_18);
             self.total_principal_deposits.set(&total_principal);
 
-            if self.env().transfer(AccountIdMapper::to_address(caller_acc.as_ref()), U256::from(amount)).is_err() {
+            // Transfer in 18 decimals (chain format)
+            if self.env().transfer(AccountIdMapper::to_address(caller_acc.as_ref()), U256::from(amount_18)).is_err() {
                 return Err(Error::TransactionFailed);
             }
 
             self.env().emit_event(Withdraw {
                 withdrawer: caller_acc,
-                amount,
+                amount: amount_18, // Emit in 18 decimals
             });
 
             Ok(())
@@ -369,18 +396,36 @@ mod lending_pool {
             // self.env().emit_event(InterestAccrued { amount: interest, reserves: reserve_add });
         }
 
-        /// Get user's accrued yield
+        /// Get user's accrued yield (read-only, doesn't accrue interest)
+        /// Returns yield in 18 decimals (chain format)
+        /// Note: This calculates yield based on current state without accruing interest.
+        /// For up-to-date yield, call accrue_interest_and_get_user_yield instead.
         #[ink(message)]
-        pub fn get_user_yield(&mut self, account_id: AccountId) -> Balance {
+        pub fn get_user_yield(&self, account_id: AccountId) -> Balance {
+            self.calculate_user_yield(account_id)
+        }
+
+        /// Get user's accrued yield and ensure interest is up-to-date
+        /// Returns yield in 18 decimals (chain format)
+        /// This version accrues interest before calculating yield for accurate results
+        #[ink(message)]
+        pub fn accrue_interest_and_get_user_yield(&mut self, account_id: AccountId) -> Balance {
             // First, ensure interest is up-to-date
             self.accrue_interest();
+            self.calculate_user_yield(account_id)
+        }
 
+        /// Internal helper to calculate user yield without mutating state
+        fn calculate_user_yield(&self, account_id: AccountId) -> Balance {
             let caller_acc = account_id;
 
-            let user_deposit = self.user_deposits.get(&caller_acc).unwrap_or(0);
-            if user_deposit == 0 {
+            let user_deposit_10 = self.user_deposits.get(&caller_acc).unwrap_or(0);
+            if user_deposit_10 == 0 {
                 return 0;
             }
+
+            // Convert user_deposit from 10 decimals to 18 decimals for calculations
+            let user_deposit_18 = self.convert_10_to_18_decimals(user_deposit_10);
 
             let total_liquidity = self.total_liquidity.get_or_default();
             if total_liquidity == 0 {
@@ -398,8 +443,13 @@ mod lending_pool {
                 return 0;
             }
 
-            // User's yield = (user_deposit / total_principal_deposits) * total_accrued_interest
-            (user_deposit as u128 * accrued_interest as u128 / total_principal as u128) as Balance
+            // User's yield = (user_deposit_18 / total_principal_deposits) * total_accrued_interest
+            // All values are in 18 decimals
+            // Use checked arithmetic to prevent overflow
+            (user_deposit_18 as u128)
+                .checked_mul(accrued_interest as u128)
+                .and_then(|v| v.checked_div(total_principal as u128))
+                .unwrap_or(0) as Balance
         }
 
         /// Get user's deposit balance
@@ -415,6 +465,7 @@ mod lending_pool {
 
         /// Disburse part of liquidity (add a borrow basically)
         /// Only callable by the authorized loan manager contract
+        /// amount: in 10 decimals (storage format)
         #[ink(message)]
         pub fn disburse(&mut self, amount: Balance, to: AccountId) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
@@ -422,21 +473,24 @@ mod lending_pool {
 
             self.accrue_interest();
 
+            // Convert amount from 10 decimals to 18 decimals for calculations and transfer
+            let amount_18 = self.convert_10_to_18_decimals(amount);
+
             let mut total_borrowed = self.total_borrowed.get_or_default();
             let mut total_liquidity = self.total_liquidity.get_or_default();
 
-            if amount > (total_liquidity - total_borrowed) {
+            if amount_18 > (total_liquidity - total_borrowed) {
                 return Err(Error::UnavailableFunds);
             }
 
-            // Update total liquidity and total borrowed
-            total_borrowed = total_borrowed.saturating_add(amount);
-            total_liquidity = total_liquidity.saturating_sub(amount);
+            // Update total liquidity and total borrowed (both in 18 decimals)
+            total_borrowed = total_borrowed.saturating_add(amount_18);
+            total_liquidity = total_liquidity.saturating_sub(amount_18);
             self.total_borrowed.set(&total_borrowed);
             self.total_liquidity.set(&total_liquidity);
 
-            // Transfer disbursed amount to the borrower
-            if self.env().transfer(AccountIdMapper::to_address(to.as_ref()), U256::from(amount)).is_err() {
+            // Transfer disbursed amount to the borrower (in 18 decimals)
+            if self.env().transfer(AccountIdMapper::to_address(to.as_ref()), U256::from(amount_18)).is_err() {
                 return Err(Error::TransactionFailed);
             }
 
@@ -444,6 +498,7 @@ mod lending_pool {
         }
 
         /// Repay a loan (reduce borrowed amount)
+        /// amount: in 18 decimals (chain format, matching transferred_value)
         #[ink(message, payable)]
         pub fn receive_repayment(&mut self, amount: Balance) -> Result<(), Error> {
             let received_u256 = self.env().transferred_value();
@@ -453,7 +508,7 @@ mod lending_pool {
             if received_u256 > U256::from(u128::MAX) {
                 return Err(Error::Overflow);
             }
-            let received: Balance = received_u256.as_u128();
+            let received: Balance = received_u256.as_u128(); // 18 decimals
 
             if received != amount {
                 return Err(Error::AmountMismatch);
@@ -477,6 +532,7 @@ mod lending_pool {
 
         /// Slash part of the position of a voucher
         /// Only callable by the authorized vouch contract
+        /// amount: in 10 decimals (storage format)
         #[ink(message)]
         pub fn slash_stake(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
             // Verify caller is the authorized vouch contract
@@ -488,33 +544,43 @@ mod lending_pool {
             if amount > user_balance {
                 return Err(Error::UnavailableFunds);
             }
+            
+            // Convert amount from 10 decimals to 18 decimals for calculations
+            let amount_18 = self.convert_10_to_18_decimals(amount);
+            
             let total_liquidity = self.total_liquidity.get_or_default();
             let total_principal = self.total_principal_deposits.get_or_default();
             
             // Calculate principal reduction (same logic as withdraw)
-            let principal_to_reduce = if total_principal > 0 && total_liquidity > 0 {
-                (amount as u128 * total_principal as u128 / total_liquidity as u128) as Balance
+            let principal_to_reduce_18 = if total_principal > 0 && total_liquidity > 0 {
+                (amount_18 as u128)
+                    .checked_mul(total_principal as u128)
+                    .and_then(|v| v.checked_div(total_liquidity as u128))
+                    .unwrap_or(0) as Balance
             } else {
-                amount
+                amount_18
             };
 
-            // Update user's deposit balance
-            let new_user_balance = user_balance.saturating_sub(principal_to_reduce);
+            // Convert principal_to_reduce back to 10 decimals for user_deposits storage
+            let principal_to_reduce_10 = self.convert_18_to_10_decimals(principal_to_reduce_18);
+
+            // Update user's deposit balance (stored in 10 decimals)
+            let new_user_balance = user_balance.saturating_sub(principal_to_reduce_10);
             self.user_deposits.insert(&user, &new_user_balance);
 
-            // Update total liquidity
+            // Update total liquidity (stored in 18 decimals)
             let mut total_liquidity = self.total_liquidity.get_or_default();
-            total_liquidity = total_liquidity.saturating_sub(amount);
+            total_liquidity = total_liquidity.saturating_sub(amount_18);
             self.total_liquidity.set(&total_liquidity);
             
-            // Update total principal deposits
+            // Update total principal deposits (stored in 18 decimals)
             let mut total_principal = self.total_principal_deposits.get_or_default();
-            total_principal = total_principal.saturating_sub(principal_to_reduce);
+            total_principal = total_principal.saturating_sub(principal_to_reduce_18);
             self.total_principal_deposits.set(&total_principal);
 
-            // Update reserved funds
+            // Update reserved funds (stored in 18 decimals)
             let mut reserved_funds = self.reserved_funds.get_or_default();
-            reserved_funds = reserved_funds.saturating_add(amount);
+            reserved_funds = reserved_funds.saturating_add(amount_18);
             self.reserved_funds.set(&reserved_funds);
 
             Ok(())
