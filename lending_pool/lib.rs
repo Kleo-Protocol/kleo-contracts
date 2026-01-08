@@ -25,6 +25,7 @@ mod lending_pool {
         reserved_funds: Lazy<Balance>,
         total_principal_deposits: Lazy<Balance>, // Total principal deposited (excluding interest)
         user_deposits: Mapping<AccountId, Balance>,
+        user_staked_capital: Mapping<AccountId, Balance>, // Staked capital per user (in 10 decimals)
         last_update: Lazy<Timestamp>,
         vouch_contract: Lazy<Option<Address>>, // Authorized vouch contract address
         loan_manager: Lazy<Option<Address>>, // Authorized loan manager contract address
@@ -46,6 +47,22 @@ mod lending_pool {
     #[ink(event)]
     pub struct RepaymentReceived {
         amount: Balance,
+    }
+
+    /// User information structure
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    pub struct UserInfo {
+        /// User's total deposit (in 18 decimals)
+        pub deposit: Balance,
+        /// User's staked capital backing vouches (in 18 decimals)
+        pub staked_capital: Balance,
+        /// Available balance that can be withdrawn (in 18 decimals)
+        pub available_balance: Balance,
+        /// User's accrued yield (in 18 decimals)
+        pub yield_amount: Balance,
+        /// User's total share of the pool including interest (in 18 decimals)
+        pub total_share: Balance,
     }
 
 
@@ -94,6 +111,7 @@ mod lending_pool {
                 reserved_funds: Lazy::new(),
                 total_principal_deposits: Lazy::new(),
                 user_deposits: Mapping::default(),
+                user_staked_capital: Mapping::default(),
                 last_update: Lazy::new(),
                 vouch_contract: Lazy::default(),
                 loan_manager: Lazy::default(),
@@ -216,6 +234,10 @@ mod lending_pool {
             // Convert user_deposit from 10 decimals to 18 decimals for comparison
             let user_deposit_18 = self.convert_10_to_18_decimals(user_deposit);
             
+            // Get user's staked capital (in 10 decimals) and convert to 18 decimals
+            let user_staked_10 = self.user_staked_capital.get(&caller_acc).unwrap_or(0);
+            let user_staked_18 = self.convert_10_to_18_decimals(user_staked_10);
+            
             // Calculate user's share of the pool (principal + interest)
             // User can withdraw up to their share: (user_deposit / total_principal) * total_liquidity
             // If total_liquidity >= total_principal, user_share should be >= user_deposit_18
@@ -234,7 +256,11 @@ mod lending_pool {
             // Cap user_share at total_liquidity (can't withdraw more than what's in the pool)
             let user_share = user_share.min(total_liquidity);
             
-            if amount_18 > user_share {
+            // Calculate available balance: user_share minus staked capital
+            // Users cannot withdraw staked capital that's backing active vouches
+            let available_balance = user_share.saturating_sub(user_staked_18);
+            
+            if amount_18 > available_balance {
                 return Err(Error::UnavailableFunds);
             }
             
@@ -533,6 +559,7 @@ mod lending_pool {
         /// Slash part of the position of a voucher
         /// Only callable by the authorized vouch contract
         /// amount: in 10 decimals (storage format)
+        /// Note: This function also decreases staked capital tracking automatically
         #[ink(message)]
         pub fn slash_stake(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
             // Verify caller is the authorized vouch contract
@@ -543,6 +570,20 @@ mod lending_pool {
             let user_balance = self.user_deposits.get(&user).unwrap_or(0);
             if amount > user_balance {
                 return Err(Error::UnavailableFunds);
+            }
+            
+            // Decrease staked capital tracking (release the lock)
+            let current_staked = self.user_staked_capital.get(&user).unwrap_or(0);
+            if amount > current_staked {
+                // If slashing more than staked, just clear all staked capital
+                self.user_staked_capital.remove(&user);
+            } else {
+                let new_staked = current_staked.saturating_sub(amount);
+                if new_staked == 0 {
+                    self.user_staked_capital.remove(&user);
+                } else {
+                    self.user_staked_capital.insert(&user, &new_staked);
+                }
             }
             
             // Convert amount from 10 decimals to 18 decimals for calculations
@@ -578,12 +619,176 @@ mod lending_pool {
             total_principal = total_principal.saturating_sub(principal_to_reduce_18);
             self.total_principal_deposits.set(&total_principal);
 
-            // Update reserved funds (stored in 18 decimals)
-            let mut reserved_funds = self.reserved_funds.get_or_default();
-            reserved_funds = reserved_funds.saturating_add(amount_18);
-            self.reserved_funds.set(&reserved_funds);
+            // Note: Reserved funds are NOT added here anymore
+            // They are only added in handle_default_recovery if there's a deficit
 
             Ok(())
+        }
+
+        /// Handle default recovery: compare total slashed capital to loan amount
+        /// Only callable by the authorized vouch contract
+        /// total_slashed_capital: Total capital slashed from all vouchers (in 10 decimals)
+        /// loan_amount: The loan amount that defaulted (in 10 decimals)
+        /// 
+        /// Logic:
+        /// - If slashed capital >= loan amount: Add loan amount back to liquidity (covers the default)
+        /// - If slashed capital < loan amount: Add slashed amount back to liquidity, add deficit to reserved_funds
+        #[ink(message)]
+        pub fn handle_default_recovery(&mut self, total_slashed_capital: Balance, loan_amount: Balance) -> Result<(), Error> {
+            // Verify caller is the authorized vouch contract
+            self.ensure_vouch_contract()?;
+
+            // Convert to 18 decimals for calculations
+            let total_slashed_18 = self.convert_10_to_18_decimals(total_slashed_capital);
+            let loan_amount_18 = self.convert_10_to_18_decimals(loan_amount);
+
+            // Get current state before modifications
+            let current_liquidity = self.total_liquidity.get_or_default();
+            let current_principal = self.total_principal_deposits.get_or_default();
+
+            if total_slashed_18 >= loan_amount_18 {
+                // Slashed capital is sufficient to cover the default
+                // Add the loan amount back to liquidity (this covers the loss from the default)
+                let mut total_liquidity = current_liquidity;
+                total_liquidity = total_liquidity.saturating_add(loan_amount_18);
+                self.total_liquidity.set(&total_liquidity);
+
+                // Also add back to total_principal_deposits proportionally
+                // Calculate how much principal to add back (same proportion as current pool)
+                let principal_to_add_18 = if current_liquidity > 0 && current_principal > 0 {
+                    (loan_amount_18 as u128)
+                        .checked_mul(current_principal as u128)
+                        .and_then(|v| v.checked_div(current_liquidity as u128))
+                        .unwrap_or(0) as Balance
+                } else {
+                    loan_amount_18
+                };
+                let mut total_principal = current_principal;
+                total_principal = total_principal.saturating_add(principal_to_add_18);
+                self.total_principal_deposits.set(&total_principal);
+            } else {
+                // Slashed capital is insufficient - there's a deficit
+                // Add what we can recover back to liquidity
+                let mut total_liquidity = current_liquidity;
+                total_liquidity = total_liquidity.saturating_add(total_slashed_18);
+                self.total_liquidity.set(&total_liquidity);
+
+                // Add back to total_principal_deposits proportionally
+                let principal_to_add_18 = if current_liquidity > 0 && current_principal > 0 {
+                    (total_slashed_18 as u128)
+                        .checked_mul(current_principal as u128)
+                        .and_then(|v| v.checked_div(current_liquidity as u128))
+                        .unwrap_or(0) as Balance
+                } else {
+                    total_slashed_18
+                };
+                let mut total_principal = current_principal;
+                total_principal = total_principal.saturating_add(principal_to_add_18);
+                self.total_principal_deposits.set(&total_principal);
+
+                // Calculate deficit and add to reserved funds
+                let deficit = loan_amount_18.saturating_sub(total_slashed_18);
+                let mut reserved_funds = self.reserved_funds.get_or_default();
+                reserved_funds = reserved_funds.saturating_add(deficit);
+                self.reserved_funds.set(&reserved_funds);
+            }
+
+            Ok(())
+        }
+
+        /// Increase staked capital for a user (only callable by vouch contract)
+        /// amount: in 10 decimals (storage format)
+        #[ink(message)]
+        pub fn increase_staked_capital(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
+            // Verify caller is the authorized vouch contract
+            self.ensure_vouch_contract()?;
+
+            if amount == 0 {
+                return Err(Error::ZeroAmount);
+            }
+
+            let user_deposit = self.user_deposits.get(&user).unwrap_or(0);
+            let current_staked = self.user_staked_capital.get(&user).unwrap_or(0);
+            let new_staked = current_staked.saturating_add(amount);
+
+            // Ensure staked capital doesn't exceed user's deposit
+            if new_staked > user_deposit {
+                return Err(Error::UnavailableFunds);
+            }
+
+            self.user_staked_capital.insert(&user, &new_staked);
+            Ok(())
+        }
+
+        /// Decrease staked capital for a user (only callable by vouch contract)
+        /// amount: in 10 decimals (storage format)
+        #[ink(message)]
+        pub fn decrease_staked_capital(&mut self, user: AccountId, amount: Balance) -> Result<(), Error> {
+            // Verify caller is the authorized vouch contract
+            self.ensure_vouch_contract()?;
+
+            if amount == 0 {
+                return Err(Error::ZeroAmount);
+            }
+
+            let current_staked = self.user_staked_capital.get(&user).unwrap_or(0);
+            if amount > current_staked {
+                return Err(Error::UnavailableFunds);
+            }
+
+            let new_staked = current_staked.saturating_sub(amount);
+            if new_staked == 0 {
+                self.user_staked_capital.remove(&user);
+            } else {
+                self.user_staked_capital.insert(&user, &new_staked);
+            }
+            Ok(())
+        }
+
+        /// Get user's staked capital
+        /// Returns amount in 10 decimals (storage format)
+        #[ink(message)]
+        pub fn get_user_staked_capital(&self, user: AccountId) -> Balance {
+            self.user_staked_capital.get(&user).unwrap_or(0)
+        }
+
+        /// Get comprehensive user information
+        /// Returns all user data including deposit, staked capital, available balance, and yield
+        #[ink(message)]
+        pub fn get_user_info(&self, account_id: AccountId) -> UserInfo {
+            let user_deposit_10 = self.user_deposits.get(&account_id).unwrap_or(0);
+            let user_staked_10 = self.user_staked_capital.get(&account_id).unwrap_or(0);
+            
+            // Convert to 18 decimals for return values
+            let user_deposit_18 = self.convert_10_to_18_decimals(user_deposit_10);
+            let user_staked_18 = self.convert_10_to_18_decimals(user_staked_10);
+            
+            // Calculate user's share and available balance
+            let total_liquidity = self.total_liquidity.get_or_default();
+            let total_principal = self.total_principal_deposits.get_or_default();
+            
+            let user_share = if total_principal > 0 && total_liquidity > 0 {
+                (user_deposit_18 as u128)
+                    .checked_mul(total_liquidity as u128)
+                    .and_then(|v| v.checked_div(total_principal as u128))
+                    .unwrap_or(user_deposit_18) as Balance
+            } else {
+                user_deposit_18
+            };
+            
+            let user_share = user_share.min(total_liquidity);
+            let available_balance = user_share.saturating_sub(user_staked_18);
+            
+            // Calculate yield
+            let yield_amount = self.calculate_user_yield(account_id);
+            
+            UserInfo {
+                deposit: user_deposit_18, // 18 decimals
+                staked_capital: user_staked_18, // 18 decimals
+                available_balance, // 18 decimals
+                yield_amount, // 18 decimals
+                total_share: user_share, // 18 decimals
+            }
         }
     }
 }

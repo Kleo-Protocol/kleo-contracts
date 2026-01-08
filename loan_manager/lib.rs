@@ -311,7 +311,8 @@ mod loan_manager {
             self.loans.insert(loan_id, &loan);
 
             // Resolve all vouch relationships for this loan as successful
-            self.vouch.resolve_loan(loan_id, loan.borrower, true, loan_manager_address)
+            // Pass 0 for loan_amount since it's not used when success=true
+            self.vouch.resolve_loan(loan_id, loan.borrower, true, 0, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanRepaid event
@@ -366,7 +367,8 @@ mod loan_manager {
             let _ = self.reputation.slash_stars(loan.borrower, stars_to_slash);
 
             // Resolve all vouch relationships for this loan as failed
-            self.vouch.resolve_loan(loan_id, loan.borrower, false, loan_manager_address)
+            // Pass loan.amount to compare with slashed capital for recovery calculation
+            self.vouch.resolve_loan(loan_id, loan.borrower, false, loan.amount, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanDefaulted event
