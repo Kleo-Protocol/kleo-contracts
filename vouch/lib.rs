@@ -117,10 +117,12 @@ mod vouch {
         #[ink(message)]
         pub fn vouch_for_loan(&mut self, loan_id: u64, borrower: AccountId, voucher: AccountId, stars: u32, capital_percent: u8, loan_manager_address: Address) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if loan_manager_address != loan_manager {
+            // Verify both the caller and the parameter match the stored loan manager
+            if caller != loan_manager || loan_manager_address != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
@@ -216,6 +218,23 @@ mod vouch {
             self.loan_vouchers.get(&loan_id).unwrap_or_default()
         }
 
+        /// Get total staked capital for a specific loan
+        /// Returns the sum of all staked capital from active vouches for this loan
+        #[ink(message)]
+        pub fn get_total_staked_capital_for_loan(&self, loan_id: u64, borrower: AccountId) -> Balance {
+            let vouchers = self.loan_vouchers.get(&loan_id).unwrap_or_default();
+            let mut total_staked = 0u128;
+            for voucher in vouchers.iter() {
+                let key = (*voucher, borrower);
+                if let Some(rel) = self.relationships.get(&key) {
+                    if rel.loan_id == loan_id && rel.status == Status::Active {
+                        total_staked += rel.staked_capital as u128;
+                    }
+                }
+            }
+            total_staked as Balance
+        }
+
         /// Get count of active vouches for a borrower (backward compatibility)
         #[ink(message)]
         pub fn get_vouches_for(&self, borrower: AccountId) -> u32 {
@@ -243,10 +262,12 @@ mod vouch {
         #[ink(message)]
         pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool, loan_amount: Balance, loan_manager_address: Address) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if loan_manager_address != loan_manager {
+            // Verify both the caller and the parameter match the stored loan manager
+            if caller != loan_manager || loan_manager_address != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
