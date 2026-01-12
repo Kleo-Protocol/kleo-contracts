@@ -120,15 +120,7 @@ mod reputation {
         #[ink(message)]
         pub fn add_stars(&mut self, user: AccountId, amount: u32) -> Result<(), Error> {
             // Verify caller is an authorized contract (loan manager or vouch contract)
-            if self.ensure_loan_manager().is_ok() {
-                if !self.ensure_vouch_contract().is_ok() {
-                    return Err(Error::Unauthorized);
-                }
-            } else if self.ensure_vouch_contract().is_ok() {
-                if !self.ensure_loan_manager().is_ok() {
-                    return Err(Error::Unauthorized);
-                }
-            } else {
+            if !self.ensure_loan_manager().is_ok() || !self.ensure_vouch_contract().is_ok(){
                 return Err(Error::Unauthorized);
             }
 

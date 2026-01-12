@@ -88,6 +88,7 @@ mod loan_manager {
         Unauthorized,
         RepaymentFailed,
         InvalidRepaymentAmount,
+        InsufficientAmount,
         Overflow,
     }
 
@@ -218,6 +219,7 @@ mod loan_manager {
         }
 
         // Internal function to disburse a loan that has enough vouches
+        // Verifies all requirements: stars, vouches, and capital before disbursing
         fn disburse_loan(&mut self, loan_id: u64) -> Result<()> {
             let mut loan = self.loans.get(loan_id).ok_or(Error::LoanNotFound)?;
 
@@ -225,14 +227,55 @@ mod loan_manager {
                 return Err(Error::LoanNotPending);
             }
 
-            // Update loan to Active status
+            // Re-verify all requirements before disbursement
+            let (min_stars, min_vouches) = self.calculate_requirements(loan.amount);
+
+            // 1. Verify borrower still has enough stars (may have decreased since request)
+            let borrower_stars = self.reputation.get_stars(loan.borrower);
+            if borrower_stars < min_stars {
+                return Err(Error::InsufficientReputation);
+            }
+
+            // 2. Verify we have enough vouches
+            let current_vouches = self.vouch.get_vouches_for_loan(loan_id);
+            if current_vouches < min_vouches {
+                return Err(Error::InsufficientVouches);
+            }
+
+            // 3. Verify total staked capital is sufficient (at least 90% of loan amount)
+            // This ensures vouchers have collectively staked enough capital to back the loan
+            let total_staked_capital = self.vouch.get_total_staked_capital_for_loan(loan_id, loan.borrower);
+            let min_required_capital = (loan.amount as u128)
+                .checked_mul(90)
+                .and_then(|v| v.checked_div(100))
+                .unwrap_or(0) as Balance;
+            if total_staked_capital < min_required_capital {
+                return Err(Error::InsufficientAmount);
+            }
+
+            // All requirements met - update loan to Active status
             loan.status = LoanStatus::Active;
             loan.start_time = self.env().block_timestamp();
             self.loans.insert(loan_id, &loan);
 
-            // Disburse funds via lending pool
-            self.lending_pool.disburse(loan.amount, loan.borrower)
-                .map_err(|_| Error::DisbursementFailed)?;
+            // Disburse funds via lending pool using build_call for proper cross-contract execution
+            use ink::env::call::{build_call, ExecutionInput, Selector};
+            use ink::env::DefaultEnvironment;
+            
+            let result = build_call::<DefaultEnvironment>()
+                .call(self.lending_pool_address)
+                .exec_input(
+                    ExecutionInput::new(Selector::new(ink::selector_bytes!("disburse")))
+                        .push_arg(&loan.amount) // amount in 10 decimals (storage format)
+                        .push_arg(&loan.borrower) // borrower account
+                )
+                .returns::<Result<()>>()
+                .try_invoke();
+            
+            match result {
+                Ok(Ok(_)) => {},
+                _ => return Err(Error::DisbursementFailed),
+            }
 
             Ok(())
         }
@@ -311,7 +354,8 @@ mod loan_manager {
             self.loans.insert(loan_id, &loan);
 
             // Resolve all vouch relationships for this loan as successful
-            self.vouch.resolve_loan(loan_id, loan.borrower, true, loan_manager_address)
+            // Pass 0 for loan_amount since it's not used when success=true
+            self.vouch.resolve_loan(loan_id, loan.borrower, true, 0, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanRepaid event
@@ -366,7 +410,8 @@ mod loan_manager {
             let _ = self.reputation.slash_stars(loan.borrower, stars_to_slash);
 
             // Resolve all vouch relationships for this loan as failed
-            self.vouch.resolve_loan(loan_id, loan.borrower, false, loan_manager_address)
+            // Pass loan.amount to compare with slashed capital for recovery calculation
+            self.vouch.resolve_loan(loan_id, loan.borrower, false, loan.amount, loan_manager_address)
                 .map_err(|_| Error::ResolveFailed)?;
 
             // Emit LoanDefaulted event
@@ -475,6 +520,6 @@ mod loan_manager {
                 }
             }
             active_loans
-        }
+        }        
     }
 }

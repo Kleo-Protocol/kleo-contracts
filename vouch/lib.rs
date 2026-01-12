@@ -117,10 +117,12 @@ mod vouch {
         #[ink(message)]
         pub fn vouch_for_loan(&mut self, loan_id: u64, borrower: AccountId, voucher: AccountId, stars: u32, capital_percent: u8, loan_manager_address: Address) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if loan_manager_address != loan_manager {
+            // Verify both the caller and the parameter match the stored loan manager
+            if caller != loan_manager || loan_manager_address != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
@@ -160,6 +162,9 @@ mod vouch {
 
             // Stake stars in Reputation (after all validations pass)
             self.reputation.stake_stars(voucher, stars).map_err(|_| Error::UnableToVouch)?;
+
+            // Increase staked capital in LendingPool (prevents withdrawal of staked capital)
+            self.lending_pool.increase_staked_capital(voucher, staked_capital).map_err(|_| Error::UnableToVouch)?;
 
             // Store the relationship
             let key = (voucher, borrower);
@@ -213,6 +218,23 @@ mod vouch {
             self.loan_vouchers.get(&loan_id).unwrap_or_default()
         }
 
+        /// Get total staked capital for a specific loan
+        /// Returns the sum of all staked capital from active vouches for this loan
+        #[ink(message)]
+        pub fn get_total_staked_capital_for_loan(&self, loan_id: u64, borrower: AccountId) -> Balance {
+            let vouchers = self.loan_vouchers.get(&loan_id).unwrap_or_default();
+            let mut total_staked = 0u128;
+            for voucher in vouchers.iter() {
+                let key = (*voucher, borrower);
+                if let Some(rel) = self.relationships.get(&key) {
+                    if rel.loan_id == loan_id && rel.status == Status::Active {
+                        total_staked += rel.staked_capital as u128;
+                    }
+                }
+            }
+            total_staked as Balance
+        }
+
         /// Get count of active vouches for a borrower (backward compatibility)
         #[ink(message)]
         pub fn get_vouches_for(&self, borrower: AccountId) -> u32 {
@@ -236,17 +258,31 @@ mod vouch {
 
         /// Resolve all vouch relationships for a loan upon loan completion
         /// Only callable by the authorized loan manager contract
+        /// loan_amount: The loan amount (in 10 decimals). Only used when success=false to calculate recovery.
         #[ink(message)]
-        pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool, loan_manager_address: Address) -> Result<(), Error> {
+        pub fn resolve_loan(&mut self, loan_id: u64, borrower: AccountId, success: bool, loan_amount: Balance, loan_manager_address: Address) -> Result<(), Error> {
             // Verify caller is the authorized loan manager
+            let caller = Self::env().caller();
             let loan_manager = self.loan_manager.get()
                 .and_then(|opt| opt)
                 .ok_or(Error::Unauthorized)?;
-            if loan_manager_address!= loan_manager {
+            // Verify both the caller and the parameter match the stored loan manager
+            if caller != loan_manager || loan_manager_address != loan_manager {
                 return Err(Error::Unauthorized);
             }
 
             let vouchers = self.loan_vouchers.get(&loan_id).unwrap_or_default();
+
+            // Calculate total staked capital for this loan (before slashing)
+            let mut total_staked_for_loan = 0u128;
+            for voucher in vouchers.iter() {
+                let key = (*voucher, borrower);
+                if let Some(rel) = self.relationships.get(&key) {
+                    if rel.loan_id == loan_id && rel.status == Status::Active {
+                        total_staked_for_loan += rel.staked_capital as u128;
+                    }
+                }
+            }
 
             for voucher in vouchers.iter() {
                 let key = (*voucher, borrower);
@@ -261,11 +297,18 @@ mod vouch {
                     self.relationships.insert(&key, &relationship);
 
                     // Unstake/slash stars via Reputation
-                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success);
+                    self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success)
+                        .map_err(|_| Error::UnableToVouch)?;
 
-                    // If failure, slash capital via LendingPool
-                    if !success {
-                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital);
+                    // If success, just decrease staked capital (release the lock, user keeps funds)
+                    // If failure, slash_stake will handle decreasing staked capital automatically
+                    if success {
+                        self.lending_pool.decrease_staked_capital(*voucher, relationship.staked_capital)
+                            .map_err(|_| Error::UnableToVouch)?;
+                    } else {
+                        // Slash capital via LendingPool (this also decreases staked capital tracking)
+                        self.lending_pool.slash_stake(*voucher, relationship.staked_capital)
+                            .map_err(|_| Error::UnableToVouch)?;
                     }
 
                     self.env().emit_event(VouchResolved {
@@ -281,20 +324,17 @@ mod vouch {
 
             // Decrement borrower exposure by total staked capital for this loan
             let mut current_exposure = self.borrower_exposure.get(&borrower).unwrap_or(0);
-            let mut total_staked_for_loan = 0u128;
-            for voucher in vouchers.iter() {
-                let key = (*voucher, borrower);
-                if let Some(rel) = self.relationships.get(&key) {
-                    if rel.loan_id == loan_id {
-                        total_staked_for_loan += rel.staked_capital as u128;
-                    }
-                }
-            }
             current_exposure = current_exposure.saturating_sub(total_staked_for_loan as Balance);
             if current_exposure == 0 {
                 self.borrower_exposure.remove(&borrower);
             } else {
                 self.borrower_exposure.insert(&borrower, &current_exposure);
+            }
+
+            // If default (failure), handle recovery: compare slashed capital to loan amount
+            if !success {
+                let total_staked_10 = total_staked_for_loan as Balance;
+                let _ = self.lending_pool.handle_default_recovery(total_staked_10, loan_amount);
             }
 
             Ok(())
@@ -326,11 +366,18 @@ mod vouch {
                     self.relationships.insert(&key, &relationship);
 
                     // Unstake/slash stars via Reputation
-                    let _ = self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success);
+                    self.reputation.unstake_stars(*voucher, relationship.staked_stars, borrower, success)
+                        .map_err(|_| Error::UnableToVouch)?;
 
-                    // If failure, slash capital via LendingPool
-                    if !success {
-                        let _ = self.lending_pool.slash_stake(*voucher, relationship.staked_capital);
+                    // If success, just decrease staked capital (release the lock, user keeps funds)
+                    // If failure, slash_stake will handle decreasing staked capital automatically
+                    if success {
+                        self.lending_pool.decrease_staked_capital(*voucher, relationship.staked_capital)
+                            .map_err(|_| Error::UnableToVouch)?;
+                    } else {
+                        // Slash capital via LendingPool (this also decreases staked capital tracking)
+                        self.lending_pool.slash_stake(*voucher, relationship.staked_capital)
+                            .map_err(|_| Error::UnableToVouch)?;
                     }
 
                     self.env().emit_event(VouchResolved {
